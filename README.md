@@ -314,6 +314,11 @@ WIDE48, 48 kHz: locked, EVM 46-52 dB, zero RS failures
 channel presets; `tools/dfree.py` confirms every punctured rate matches its
 published free distance.
 
+## Licence
+
+MIT — use it for anything, including commercially, as long as the copyright
+and licence notice come with it. See [LICENSE](LICENSE).
+
 ## Requirements
 
 Python 3.14, numpy, scipy, numba, sounddevice. ffmpeg for the codec layer;

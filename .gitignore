@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Modem output and captures. tx.wav in particular gets large quickly.
+tx.wav
+rx.wav
+*_out.wav
+selftest_out.wav
+
+.vscode/
+.idea/
+Thumbs.db

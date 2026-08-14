@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QAMcast - transmit</title>
+<link rel="stylesheet" href="/modem.css">
+</head>
+<body>
+<h1>QAMcast <span>&mdash; transmit</span></h1>
+<div class="sub">
+  <span id="conn">connecting</span> &middot;
+  <span id="footprint">-</span>
+</div>
+
+<div class="grid">
+
+  <div class="panel">
+    <h2>Source</h2>
+    <label>Where from</label>
+    <select id="sourceMode">
+      <option value="custom">Custom &mdash; type a URL or file path</option>
+      <option value="preset">Preset station</option>
+    </select>
+
+    <div id="presetPick" style="display:none">
+      <label>Station</label>
+      <select id="station"></select>
+      <label>Feed <span class="dim" id="stationDesc"></span></label>
+      <select id="feed"></select>
+    </div>
+
+    <div id="customPick">
+      <label>Stream URL or file</label>
+      <input id="source" placeholder="https://stream.example/live.mp3 or C:\music\set.flac">
+    </div>
+
+    <div class="row">
+      <button id="checkStream">Check stream</button>
+      <button id="usePassthrough" style="display:none">Match the stream</button>
+    </div>
+    <div class="note" id="probeNote">&nbsp;</div>
+
+    <label style="display:inline"><input type="checkbox" id="passthrough" style="width:auto">
+      pass through &mdash; send the stream's own packets, no re-encode</label>
+
+    <label>Codec</label>
+    <select id="codec">
+      <option value="opus">Opus &mdash; one codec, 16-192k, has concealment</option>
+      <option value="aac">HE-AAC &mdash; steps v2 to v1 to LC as rate rises</option>
+    </select>
+    <div class="ladder" id="codecLadder"></div>
+    <div class="note" id="codecWhy">&nbsp;</div>
+    <label>Output device</label>
+    <select id="device"></select>
+    <label style="display:inline"><input type="checkbox" id="allApis" style="width:auto"> show every host API</label>
+    <div class="row">
+      <button id="start" class="go">Start</button>
+      <button id="stop" class="stop">Stop</button>
+    </div>
+    <div class="err" id="error"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Link</h2>
+    <label>Preset</label>
+    <select id="preset"></select>
+
+    <label>Card sample rate</label>
+    <select id="sampleRate"></select>
+
+    <div class="row">
+      <div>
+        <label class="lockable">Symbol rate
+          <button class="lock" data-lock="symbol_rate"
+                  title="Lock the symbol rate: hold this bandwidth and let the other fields move">&#128275;</button>
+        </label>
+        <select id="symbolRate"></select>
+      </div>
+      <div>
+        <label class="lockable">Audio bitrate
+          <button class="lock" data-lock="bitrate"
+                  title="Lock the bitrate: hold this audio quality and let the other fields move">&#128275;</button>
+        </label>
+        <input id="bitrate" list="bitrateList" inputmode="decimal"
+               placeholder="96 kbps">
+        <datalist id="bitrateList"></datalist>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label class="lockable">Modulation
+          <button class="lock" data-lock="modcod"
+                  title="Lock modulation and code rate together: hold this MODCOD and let the other fields move">&#128275;</button>
+        </label>
+        <select id="modulation"></select>
+      </div>
+      <div>
+        <label class="lockable">Code rate
+          <button class="lock" data-lock="modcod"
+                  title="Lock modulation and code rate together: hold this MODCOD and let the other fields move">&#128275;</button>
+        </label>
+        <select id="codeRate"></select>
+      </div>
+    </div>
+    <div class="note">
+      Symbol rate, MODCOD and bitrate are three views of one number: fix any
+      two and the third follows. Lock what you want held, edit anything, and
+      whatever is still free absorbs the change. Locking the symbol rate is the
+      HD Radio arrangement &mdash; a fixed slice of spectrum, with the MODCOD
+      moving to fill it.
+    </div>
+
+    <label>Roll-off</label>
+    <select id="rolloff"></select>
+
+    <table style="margin-top:12px">
+      <tr><td>Occupied</td><td id="pBand">-</td></tr>
+      <tr><td>Samples/symbol</td><td id="pSps">-</td></tr>
+      <tr><td>Channel rate</td><td id="pNet">-</td></tr>
+      <tr><td>Audio ceiling</td><td id="pMax">-</td></tr>
+      <tr><td>Needs EVM</td><td id="pEvm">-</td></tr>
+      <tr><td>Frame</td><td id="pFrame">-</td></tr>
+      <tr><td>Interleaver</td><td id="pIl">-</td></tr>
+    </table>
+    <div class="note" id="pWarn">&nbsp;</div>
+  </div>
+
+  <div class="panel">
+    <h2>On air</h2>
+    <table>
+      <tr><td>State</td><td><span id="state" class="pill">idle</span></td></tr>
+      <tr><td>MODCOD</td><td id="modcod">-</td></tr>
+      <tr><td>Channel rate</td><td id="netrate">-</td></tr>
+      <tr><td>Audio rate</td><td id="audiorate">-</td></tr>
+      <tr><td>Codec</td><td id="liveCodec">-</td></tr>
+      <tr><td>Coding tools</td><td id="liveTools">-</td></tr>
+      <tr><td>Spare</td><td id="spare">-</td></tr>
+      <tr><td>Frames sent</td><td id="frames">0</td></tr>
+      <tr><td>On air</td><td id="uptime">-</td></tr>
+      <tr><td>Peak level</td><td id="peak">-</td></tr>
+      <tr><td>Clipping</td><td id="clip">-</td></tr>
+    </table>
+    <label>Encoder backlog</label>
+    <div class="bar"><i id="backlogBar" style="width:0%"></i></div>
+    <div class="note" id="backlogNote">&nbsp;</div>
+  </div>
+
+  <div class="panel">
+    <h2>Metadata (PAD)</h2>
+    <label style="display:inline"><input type="checkbox" id="autoMeta" style="width:auto">
+      follow the station &mdash; take the song from the stream</label>
+    <div class="note" id="metaNote">&nbsp;</div>
+    <label style="display:inline"><input type="checkbox" id="swapArtist" style="width:auto">
+      this station sends Title &ndash; Artist</label>
+
+    <label>Station</label><input id="padStation" value="QAM RADIO">
+    <label>Title</label><input id="title">
+    <label>Artist</label><input id="artist">
+    <button id="sendPad">Update</button>
+    <div class="note">
+      Sent repeatedly, not once. A receiver joining mid-broadcast has missed
+      anything transmitted only at the start &mdash; and so has the
+      interleaver's fill region.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Transmitted spectrum</h2>
+    <canvas id="spectrum"></canvas>
+    <canvas id="waterfall"></canvas>
+    <div class="note" id="bandnote">&nbsp;</div>
+  </div>
+
+  <div class="panel">
+    <h2>Constellation</h2>
+    <canvas id="constellation"></canvas>
+    <div class="note">Transmitted symbols, before the channel.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Channel simulator</h2>
+    <div class="note" style="margin:0 0 8px">
+      Impairments are applied to the transmitted audio, so the receiver under
+      test stays unmodified. Leave off for a real link.
+    </div>
+    <label>Preset</label>
+    <select id="chanPreset">
+      <option value="clean">clean &mdash; off</option>
+      <option value="noisy">noisy &mdash; 25 dB, drift</option>
+      <option value="radio">radio &mdash; echo, jitter</option>
+      <option value="acoustic">acoustic &mdash; room, Doppler</option>
+      <option value="reverb">reverb &mdash; known to fail</option>
+    </select>
+    <label>SNR override, dB &mdash; blank uses the preset</label>
+    <input id="snr" placeholder="">
+    <button id="applyChan">Apply</button>
+  </div>
+
+</div>
+
+<script src="/scope.js"></script>
+<script>
+const RATES = [16,24,32,48,64,80,96,112,128,160,192];
+const $ = id => document.getElementById(id);
+let META = null, LOCKSOLVE = false;
+
+// Fields the solver is forbidden to move. Symbol rate, MODCOD and bitrate are
+// three views of one number, so editing any one of them means something else
+// has to give -- and only the user knows which. Lock what matters, and the
+// change lands on whatever is left.
+const LOCKS = new Set();
+
+function fill(sel, items, value) {
+  sel.innerHTML = '';
+  items.forEach(it => {
+    const o = document.createElement('option');
+    o.value = it.value; o.textContent = it.text;
+    sel.appendChild(o);
+  });
+  if (value !== undefined && [...sel.options].some(o => o.value == value)) sel.value = value;
+}
+
+// Assigning a value a <select> does not have leaves it on "", which reads back
+// as 0 and gets silently replaced by a default further down. Anything coming
+// from a profile has to land, so add it rather than lose it.
+function setSelect(sel, value) {
+  if (![...sel.options].some(o => o.value == value)) {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = value;
+    sel.appendChild(o);
+  }
+  sel.value = value;
+}
+
+// Typed, not chosen from a list. A list of bitrates has to be built from the
+// current ceiling, so picking one narrows the symbol rate, which lowers the
+// ceiling, which takes the higher entries away -- you could walk down the list
+// but never back up it. A text box has no such memory; the datalist keeps the
+// usual rates one click away without limiting what can be typed.
+let LAST_BITRATE = 64000;
+function readBitrate() {
+  const m = String($('bitrate').value).trim().match(/^([\d.]+)\s*k?/i);
+  if (!m) return 0;
+  const v = parseFloat(m[1]);
+  if (!isFinite(v) || v <= 0) return 0;
+  // Under 1000 means kbps, at or over means bps. Nobody asks for sub-kilobit
+  // audio, so the split is unambiguous and "96000" and "96" both work.
+  return Math.round(v < 1000 ? v * 1000 : v);
+}
+function showBitrate(bps) {
+  const k = bps / 1000;
+  LAST_BITRATE = bps;
+  $('bitrate').value = (Math.abs(k - Math.round(k)) < 0.05
+      ? String(Math.round(k)) : k.toFixed(1)) + ' kbps';
+}
+
+function paintLocks() {
+  document.querySelectorAll('button.lock').forEach(b => {
+    const on = LOCKS.has(b.dataset.lock);
+    b.classList.toggle('on', on);
+    b.innerHTML = on ? '&#128274;' : '&#128275;';
+  });
+  $('symbolRate').classList.toggle('pinned', LOCKS.has('symbol_rate'));
+  $('bitrate').classList.toggle('pinned', LOCKS.has('bitrate'));
+  $('modulation').classList.toggle('pinned', LOCKS.has('modcod'));
+  $('codeRate').classList.toggle('pinned', LOCKS.has('modcod'));
+}
+
+// HE-AAC is three encoder profiles wearing one name, and which one goes out
+// is decided by the bitrate alone. Crossing 48k or 96k changes what is
+// transmitted without changing anything on the page, so the rungs are drawn
+// with their rates and the live one lit. The ladder comes from the server, so
+// what is lit here is by construction what the encoder will run.
+function drawLadder(rungs) {
+  const box = $('codecLadder');
+  box.innerHTML = (rungs || []).map(r => {
+    const t = [r.sbr && 'SBR', r.ps && 'PS'].filter(Boolean).join('+') || '—';
+    return `<div class="${r.active ? 'on' : ''}"><b>${r.name}</b>`
+         + `<span>${r.range}</span><span>${t}</span></div>`;
+  }).join('');
+  const live = (rungs || []).find(r => r.active);
+  set('codecWhy', live ? live.name + ': ' + live.why : ' ');
+}
+
+// A field changing on its own is alarming unless it is visibly a consequence
+// of the edit, so whatever the solver moved gets a brief highlight.
+const MOVED_FIELD = {symbol_rate: ['symbolRate'], bitrate: ['bitrate'],
+                     modcod: ['modulation', 'codeRate']};
+function flash(fields) {
+  (fields || []).forEach(f => (MOVED_FIELD[f] || []).forEach(id => {
+    const el = $(id);
+    el.classList.remove('moved');
+    void el.offsetWidth;          // restart the animation
+    el.classList.add('moved');
+    // Cleared on a timer rather than animationend, which never fires while
+    // the tab is in the background -- and a highlight that outlives its
+    // animation sits on top of the lock's own border and hides it.
+    clearTimeout(el._flash);
+    el._flash = setTimeout(() => el.classList.remove('moved'), 1200);
+  }));
+}
+
+// Every control funnels through here. `driver` tells the server which field
+// the user just touched -- held for this solve whether or not it is locked --
+// and `locks` says what else it may not move.
+async function resolve(driver) {
+  if (!META || LOCKSOLVE) return;
+  // An empty box is mid-edit, not a request for the default. Solving it would
+  // send the whole panel somewhere the user never asked for while they are
+  // still reaching for the first digit.
+  if (readBitrate() <= 0) return;
+  LOCKSOLVE = true;
+  try {
+    const r = await control({
+      cmd: 'solve',
+      driver: driver,
+      locks: [...LOCKS],
+      codec: $('codec').value,
+      profile: $('preset').value,     // so the pilot spacing matches Start's
+      sample_rate: +$('sampleRate').value,
+      symbol_rate: +$('symbolRate').value,
+      bitrate: readBitrate(),
+      modulation: $('modulation').value,
+      code_rate: $('codeRate').value,
+      rolloff: +$('rolloff').value,
+    });
+    if (r.error) { set('pWarn', r.error); return; }
+
+    fill($('symbolRate'), r.symbol_rates.map(v => ({value: v, text: v + ' Bd'})), r.symbol_rate);
+    fill($('modulation'), [...new Set(META.modcods.map(m => m.modulation))]
+         .map(m => ({value: m, text: m})), r.modulation);
+    fill($('codeRate'), [...new Set(META.modcods.map(m => m.code_rate))]
+         .map(c => ({value: c, text: c})), r.code_rate);
+    // Only rewrite the box if the solver actually moved the number. Restating
+    // what someone is still typing, with " kbps" appended, jumps the caret to
+    // the end mid-word.
+    if (r.bitrate !== readBitrate() || document.activeElement !== $('bitrate'))
+      showBitrate(r.bitrate);
+    else LAST_BITRATE = r.bitrate;
+    // The datalist is a shortcut, not a limit: it says which of the standard
+    // rates fit as things stand, and anything else can still be typed.
+    $('bitrateList').innerHTML = RATES.map(k => `<option value="${k} kbps">`
+        + (k * 1000 <= r.max_audio_bitrate ? '' : 'needs a wider link')
+        + '</option>').join('');
+    flash(r.moved);
+    drawLadder(r.codec_ladder);
+    // The solver is allowed to move the symbol rate, and once it has, the
+    // preset name no longer describes the link -- while Start still sends
+    // that name, and the backend rebuilds the preset's own symbol rate from
+    // it. That mismatch is what had the page planning one channel while the
+    // encoder was handed another.
+    if ((r.moved || []).includes('symbol_rate')) deviate();
+
+    set('pBand', `${(r.band[0]/1000).toFixed(1)} - ${(r.band[1]/1000).toFixed(1)} kHz`);
+    set('pSps', r.sps);
+    set('pNet', (r.net_bitrate/1000).toFixed(1) + ' kbps');
+    set('pMax', (r.max_audio_bitrate/1000).toFixed(1) + ' kbps');
+    set('pEvm', r.required_evm_db.toFixed(1) + ' dB');
+    set('pFrame', r.frame_symbols + ' sym, ' + r.frame_ms + ' ms');
+    set('pIl', r.interleaver_seconds + ' s');
+    set('footprint', `${r.modcod_name} · ${r.symbol_rate} Bd · ${(r.band[0]/1000).toFixed(1)}-${(r.band[1]/1000).toFixed(1)} kHz`);
+
+    let warn = r.conflict || '';
+    if (warn) { /* a lock is in the way; that is the thing to say */ }
+    else if (!r.fits) warn = 'Does not fit under Nyquist on this card. Lower the symbol rate.';
+    else if (r.band[1] > r.nyquist * 0.88)
+      warn = 'Upper edge is close to Nyquist. Fine on a virtual cable; a real card is already rolling off up there.';
+    else if (!r.carries) warn = 'This bitrate needs a faster symbol rate than the card allows.';
+    const trouble = !!(r.conflict || !r.carries || !r.fits);
+    set('pWarn', [warn].concat(r.notes || []).filter(Boolean).join(' ') || '\u00a0');
+    $('pWarn').className = 'note' + (trouble ? ' warn' : '');
+  } finally { LOCKSOLVE = false; }
+}
+
+async function applyPreset() {
+  const name = $('preset').value;
+  const custom = name === 'CUSTOM';
+  $('sampleRate').disabled = !custom;
+  $('rolloff').disabled = !custom;
+  let released = '';
+  if (!custom) {
+    const p = META.profiles.find(x => x.name === name);
+    if (p) {
+      setSelect($('sampleRate'), p.sample_rate);
+      setSelect($('rolloff'), p.rolloff);
+      fill($('symbolRate'), (META.symbol_rates[p.sample_rate] || []).map(v => ({value: v, text: v + ' Bd'})), p.symbol_rate);
+      // A preset *is* a sample rate, symbol rate and roll-off, so picking one
+      // is a direct instruction to change the field the lock protects. Release
+      // it and say so, rather than leaving a lock standing that has quietly
+      // been overruled.
+      if (LOCKS.has('symbol_rate')) {
+        LOCKS.delete('symbol_rate');
+        paintLocks();
+        released = name + ' sets the symbol rate itself, so its lock was released.';
+      }
+    }
+  }
+  await resolve('preset');
+  if (released) set('pWarn', released);
+}
+
+control({cmd:'profiles'}).then(r => {
+  META = r;
+  fill($('preset'),
+       [{value:'CUSTOM', text:'Custom - set everything by hand'}]
+       .concat(r.profiles.map(p => ({value: p.name, text: p.label}))),
+       'WIDE48');
+  fill($('sampleRate'), r.sample_rates.map(v => ({value: v, text: (v/1000) + ' kHz'})), 48000);
+  // Built from the profiles, not hardcoded. A preset whose roll-off is missing
+  // from this list cannot be selected into it -- the select silently goes to
+  // "", the page plans at the default, and the transmitter uses the profile's
+  // real value. That is how ACOUSTIC came to be planned at 0.25 and sent at
+  // 0.30.
+  const rolls = [...new Set([0.15, 0.2, 0.25, 0.3, 0.35]
+                            .concat(r.profiles.map(p => p.rolloff)))].sort((a, b) => a - b);
+  fill($('rolloff'), rolls.map(v => ({
+    value: v,
+    text: v.toFixed(2) + (v === rolls[0] ? ' - narrowest'
+                        : v === rolls[rolls.length-1] ? ' - most forgiving' : ''),
+  })), 0.25);
+  const mods = [...new Set(r.modcods.map(m => m.modulation))];
+  fill($('modulation'), mods.map(m => ({value: m, text: m})), '16QAM');
+  const codes = [...new Set(r.modcods.map(m => m.code_rate))];
+  fill($('codeRate'), codes.map(c => ({value: c, text: c})), '3/4');
+  showBitrate(64000);
+  paintLocks();
+  applyPreset();
+});
+
+// Touching any of these means the settings no longer describe the preset, so
+// the preset drops to Custom. Without that the page plans against what you
+// typed while Start sends the preset name, and the backend quietly uses the
+// preset's own symbol rate instead -- the panels disagree, and the encoder
+// ends up feeding a channel narrower than the one you were shown.
+function deviate() {
+  if ($('preset').value !== 'CUSTOM') {
+    $('preset').value = 'CUSTOM';
+    $('sampleRate').disabled = false;
+    $('rolloff').disabled = false;
+  }
+}
+
+// The codec does not change the link at all -- it only decides which encoder
+// profile runs -- so this re-solves purely to redraw the ladder.
+$('codec').onchange = () => resolve('codec');
+$('preset').onchange = applyPreset;
+$('sampleRate').onchange = () => {
+  deviate();
+  const rates = META.symbol_rates[$('sampleRate').value] || [];
+  fill($('symbolRate'), rates.map(v => ({value: v, text: v + ' Bd'})));
+  resolve('sample_rate');
+};
+$('symbolRate').onchange = () => { deviate(); resolve('symbol_rate'); };
+$('modulation').onchange = () => resolve('modcod');
+$('codeRate').onchange   = () => resolve('modcod');
+$('rolloff').onchange    = () => { deviate(); resolve('rolloff'); };
+
+// A text box fires `change` on blur, which would leave the panels describing
+// the old number while the box shows the new one. Enter solves immediately;
+// picking from the datalist arrives as `input` with no keystroke, so that
+// solves too, but only after a pause so typing "128" is not solved at "1".
+let typing = null;
+function solveBitrate() {
+  clearTimeout(typing);
+  if (readBitrate() > 0) resolve('bitrate');
+  else showBitrate(LAST_BITRATE);   // cleared and left alone; put it back
+}
+$('bitrate').oninput = () => {
+  clearTimeout(typing);
+  typing = setTimeout(() => resolve('bitrate'), 600);
+};
+$('bitrate').onchange = solveBitrate;
+$('bitrate').onkeydown = e => { if (e.key === 'Enter') solveBitrate(); };
+
+document.querySelectorAll('button.lock').forEach(b => {
+  b.onclick = () => {
+    const f = b.dataset.lock;
+    if (LOCKS.has(f)) LOCKS.delete(f); else LOCKS.add(f);
+    paintLocks();
+    // Re-solve so the panel reports against the new set of locks. Nothing was
+    // edited, so a link that already fits stays exactly as it is.
+    resolve('locks');
+  };
+});
+
+// ---- source: a typed URL, or a station from the playlist folder ----------
+//
+// The playlists on disk are one file per rate, so a station's 32k, 64k and
+// 128k feeds arrive as separate entries. They are folded back together on the
+// server, which is why picking a station then a rate works rather than
+// scrolling one flat list of twenty-two files.
+let STATIONS = [], PROBE = null;
+
+function currentSource() {
+  if ($('sourceMode').value !== 'preset') return $('source').value.trim();
+  const st = STATIONS.find(s => s.key === $('station').value);
+  const fd = st && st.feeds.find(f => f.url === $('feed').value);
+  return fd ? fd.url : '';
+}
+
+function showStations() {
+  const preset = $('sourceMode').value === 'preset';
+  $('presetPick').style.display = preset ? '' : 'none';
+  $('customPick').style.display = preset ? 'none' : '';
+  if (preset && !STATIONS.length) {
+    control({cmd: 'streams'}).then(r => {
+      STATIONS = r.stations || [];
+      if (!STATIONS.length) {
+        set('probeNote', 'No playlists found in ' + (r.dir || '') +
+            '. Type a URL instead.');
+        $('sourceMode').value = 'custom';
+        return showStations();
+      }
+      fill($('station'), STATIONS.map(s => ({value: s.key, text: s.name})));
+      pickStation();
+    });
+  } else if (preset) {
+    pickStation();
+  }
+}
+
+function pickStation() {
+  const st = STATIONS.find(s => s.key === $('station').value);
+  if (!st) return;
+  set('stationDesc', st.description ? '— ' + st.description : '');
+  // Cheapest first: on a fixed channel the lowest rate is the one most likely
+  // to fit, so it is the sensible default.
+  fill($('feed'), st.feeds.map(f => ({value: f.url, text: f.label})));
+  pickFeed();
+}
+
+function pickFeed() {
+  PROBE = null;
+  if ($('autoMeta').checked) readNowPlaying();
+  const st = STATIONS.find(s => s.key === $('station').value);
+  const fd = st && st.feeds.find(f => f.url === $('feed').value);
+  set('probeNote', fd ? fd.url : ' ');
+  $('usePassthrough').style.display = 'none';
+  if ($('passthrough').checked) checkStream();
+}
+
+// What the source actually carries, from ffprobe rather than from the URL --
+// a name ending in "-64-aac" is a filename, not a guarantee, and passthrough
+// has to know the real codec and rate before it can promise anything.
+async function checkStream() {
+  const src = currentSource();
+  if (!src) { set('probeNote', 'Nothing to check.'); return; }
+  set('probeNote', 'checking ' + src + ' …');
+  $('probeNote').className = 'note';
+  const r = await control({cmd: 'probe', source: src});
+  if (r.error) {
+    PROBE = null;
+    set('probeNote', r.error);
+    $('probeNote').className = 'note warn';
+    $('usePassthrough').style.display = 'none';
+    return;
+  }
+  PROBE = r;
+  const pt = r.passthrough || {};
+  set('probeNote', r.label + ' — ' + pt.reason);
+  $('probeNote').className = 'note' + (pt.ok ? '' : ' warn');
+  $('usePassthrough').style.display = pt.ok && r.bitrate ? '' : 'none';
+  if ($('passthrough').checked && pt.ok && r.bitrate) matchStream();
+}
+
+// Passthrough means the stream sets the bitrate, not the page. Putting its
+// rate in the box and locking it is exactly what the lock is for: the symbol
+// rate and MODCOD then move to carry whatever the station happens to send.
+function matchStream() {
+  if (!PROBE || !PROBE.bitrate) return;
+  showBitrate(PROBE.bitrate);
+  LOCKS.add('bitrate');
+  paintLocks();
+  resolve('bitrate');
+}
+
+// ---- now playing ---------------------------------------------------------
+//
+// The song is not in the audio: it arrives in the HTTP layer, as ICY metadata
+// interleaved with the stream. The server polls it on its own connection and
+// pushes what it finds onto the PAD channel, so a receiver sees the same
+// track the station is playing.
+function showNowPlaying(np, err) {
+  if (err) {
+    set('metaNote', err);
+    $('metaNote').className = 'note warn';
+    return;
+  }
+  if (!np) { set('metaNote', ' '); $('metaNote').className = 'note'; return; }
+  $('metaNote').className = 'note';
+  if (!np.raw) {
+    set('metaNote', np.station
+        ? np.station + ' — this station sends no song metadata.'
+        : 'No song metadata on this stream.');
+    return;
+  }
+  set('metaNote', 'Station says: ' + np.raw);
+  // Only fill the boxes from the stream; the station name stays whatever was
+  // typed, since relaying someone's stream is not the same as adopting their
+  // name.
+  $('title').value = np.title || '';
+  $('artist').value = np.artist || '';
+  if (!$('padStation').value && np.station) $('padStation').value = np.station;
+}
+
+async function readNowPlaying() {
+  const src = currentSource();
+  if (!src) { set('metaNote', 'Pick a source first.'); return; }
+  if (!/^https?:/i.test(src)) {
+    set('metaNote', 'Song metadata only comes from HTTP streams.');
+    $('metaNote').className = 'note';
+    return;
+  }
+  set('metaNote', 'reading the station …');
+  const r = await control({cmd: 'nowplaying', source: src,
+                           swap_artist: $('swapArtist').checked});
+  showNowPlaying(r.error ? null : r, r.error);
+}
+
+$('autoMeta').onchange = () => {
+  const on = $('autoMeta').checked;
+  // Read-only rather than disabled: still selectable and copyable, and it is
+  // obvious the station owns them now.
+  $('title').readOnly = on;
+  $('artist').readOnly = on;
+  if (on) readNowPlaying();
+  else { set('metaNote', ' '); $('metaNote').className = 'note'; }
+  control({cmd: 'metadata', auto_metadata: on,
+           swap_artist: $('swapArtist').checked});
+};
+$('swapArtist').onchange = () => {
+  control({cmd: 'metadata', swap_artist: $('swapArtist').checked})
+    .then(r => { if (r.nowplaying) showNowPlaying(r.nowplaying); });
+  if ($('autoMeta').checked) readNowPlaying();
+};
+
+$('sourceMode').onchange = showStations;
+$('station').onchange = pickStation;
+$('feed').onchange = pickFeed;
+$('checkStream').onclick = checkStream;
+$('usePassthrough').onclick = matchStream;
+$('passthrough').onchange = () => {
+  const on = $('passthrough').checked;
+  // Nothing is being encoded, so the encoder settings stop applying.
+  $('codec').disabled = on;
+  $('codecLadder').style.opacity = on ? '0.35' : '';
+  set('codecWhy', on ? 'Passthrough: the stream is copied as it is, so no '
+                     + 'encoder profile applies.' : ' ');
+  if (on && !PROBE) checkStream();
+  else if (on) matchStream();
+};
+
+const drawSpec = makeSpectrum($('spectrum'), $('waterfall'));
+const drawConst = makeConstellation($('constellation'));
+
+connect(s => {
+  set('conn', s.running ? 'live' : 'connected');
+  set('state', s.running ? 'on air' : 'idle', 'pill ' + (s.running ? 'ok' : ''));
+  set('modcod', s.modcod || '-');
+  set('netrate', s.net_rate ? (s.net_rate/1000).toFixed(1)+' kbps' : '-');
+  set('audiorate', s.audio_rate ? (s.audio_rate/1000).toFixed(1)+' kbps' : '-');
+  set('liveCodec', (s.codec || '-') + (s.passthrough ? ' (passed through)' : ''),
+      s.passthrough ? 'ok' : '');
+  // Reported from the encoder's own choice, so if the ladder stepped on the
+  // way to Start, this is what actually went out rather than what was planned.
+  // On a passed-through HE-AAC stream, PS cannot be read from the header, so
+  // it is marked as possible rather than claimed either way.
+  set('liveTools', s.codec
+      ? (([s.sbr && 'SBR', s.ps && 'PS'].filter(Boolean).join(' + ') || 'none - fully coded')
+         + (s.ps_undetermined ? ' (+ PS if present)' : ''))
+      : '-');
+  set('spare', s.spare != null ? (s.spare/1000).toFixed(1)+' kbps' : '-');
+  set('frames', s.frames ?? 0);
+  set('uptime', s.uptime != null ? s.uptime.toFixed(0)+' s' : '-');
+  set('peak', s.peak_dbfs != null ? s.peak_dbfs.toFixed(1)+' dBFS' : '-');
+  set('clip', s.clipping != null ? (s.clipping*100).toFixed(3)+' %' : '-',
+      s.clipping > 0 ? 'pill bad' : '');
+  // While running, the PAD boxes follow what the poller found, so the page
+  // shows what is actually on air rather than what was typed before Start.
+  if (s.running && $('autoMeta').checked) {
+    if (s.nowplaying) showNowPlaying(s.nowplaying, s.meta_error);
+    else if (s.meta_error) showNowPlaying(null, s.meta_error);
+  }
+  document.getElementById('backlogBar').style.width = Math.min(100,(s.backlog_frac ?? 0)*100)+'%';
+  set('backlogNote', s.backlog_note || '\u00a0');
+  if (s.error) set('error', s.error);
+  if (s.running) set('bandnote', s.footprint || '\u00a0');
+  drawConst(s.constellation, s.const_first);
+  drawSpec(s.spectrum, s.band);
+});
+
+$('start').onclick = async () => {
+  set('error','');
+  const r = await control({cmd:'start',
+    source: currentSource(),
+    codec: $('codec').value,
+    passthrough: $('passthrough').checked,
+    bitrate: readBitrate(),
+    profile: $('preset').value,
+    sample_rate: +$('sampleRate').value,
+    symbol_rate: +$('symbolRate').value,
+    rolloff: +$('rolloff').value,
+    modulation: $('modulation').value,
+    code_rate: $('codeRate').value,
+    device: $('device').value,
+    station: $('padStation').value,
+    auto_metadata: $('autoMeta').checked,
+    swap_artist: $('swapArtist').checked,
+    title: $('title').value,
+    artist: $('artist').value});
+  if (r.error) set('error', r.error);
+  // The server re-probes at Start rather than trusting the page, so its
+  // answer is the one worth reporting -- the stream may have changed rate
+  // since the check, and the capacity test ran against what it found.
+  else if (r.passthrough) set('probeNote', 'On air, passed through: ' + (r.detected || ''));
+};
+$('stop').onclick = () => control({cmd:'stop'});
+$('sendPad').onclick = () => control({cmd:'pad',
+  station: $('padStation').value, title: $('title').value, artist: $('artist').value});
+$('applyChan').onclick = () => control({cmd:'channel',
+  preset: $('chanPreset').value, snr: $('snr').value});
+
+function loadDevices() {
+  control({cmd:'devices', all: $('allApis').checked}).then(r => {
+    const d = $('device');
+    d.innerHTML = '';
+    (r.devices || []).forEach(x => {
+      const o = document.createElement('option');
+      o.value = x.index; o.textContent = x.name;
+      if (x.default) o.selected = true;
+      d.appendChild(o);
+    });
+    const f = document.createElement('option');
+    f.value = 'wav'; f.textContent = 'write tx.wav - no soundcard';
+    d.appendChild(f);
+  });
+}
+$('allApis').onchange = loadDevices;
+loadDevices();
+</script>
+</body>
+</html>

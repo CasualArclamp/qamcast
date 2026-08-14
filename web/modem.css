@@ -1,0 +1,152 @@
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --line: #30363d;
+  --text: #c9d1d9;
+  --dim: #8b949e;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --trace: #58a6ff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 2px;
+  letter-spacing: .04em;
+}
+
+h1 span { color: var(--dim); font-weight: 400; }
+
+.sub { color: var(--dim); margin-bottom: 14px; font-size: 12px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.panel h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--dim);
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+canvas { width: 100%; display: block; border-radius: 4px; background: #05080d; }
+
+table { width: 100%; border-collapse: collapse; }
+td { padding: 3px 0; vertical-align: baseline; }
+td:first-child { color: var(--dim); white-space: nowrap; padding-right: 12px; }
+td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+
+label { display: block; color: var(--dim); margin: 8px 0 3px; font-size: 12px; }
+
+input, select, button {
+  font: inherit;
+  background: #0d1117;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 8px;
+  width: 100%;
+}
+
+button {
+  cursor: pointer;
+  background: #21262d;
+  margin-top: 10px;
+  transition: border-color .15s;
+}
+button:hover { border-color: var(--accent); }
+button.go { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+button.stop { background: #6e2530; border-color: #8b2c3b; color: #fff; }
+
+.row { display: flex; gap: 8px; }
+.row > * { flex: 1; }
+
+.pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  border: 1px solid var(--line);
+}
+.pill.ok   { color: var(--ok);   border-color: var(--ok); }
+.pill.warn { color: var(--warn); border-color: var(--warn); }
+.pill.bad  { color: var(--bad);  border-color: var(--bad); }
+
+.bar { height: 4px; background: #05080d; border-radius: 2px; overflow: hidden; margin-top: 3px; }
+.bar > i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+
+.note { color: var(--dim); font-size: 11px; margin-top: 8px; line-height: 1.45; }
+.err { color: var(--bad); font-size: 12px; margin-top: 8px; word-break: break-word; }
+.warn { color: var(--warn); }
+.dim { color: var(--dim); font-weight: 400; }
+.ok { color: var(--ok); }
+
+/* A locked field is one the solver may not move. The user can still edit it --
+   that is the point -- so the lock marks the input rather than disabling it. */
+label.lockable { display: flex; align-items: center; gap: 6px; }
+button.lock {
+  width: auto;
+  margin: 0 0 0 auto;
+  padding: 0 5px;
+  line-height: 16px;
+  font-size: 11px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--dim);
+  opacity: .55;
+}
+button.lock:hover { opacity: 1; border-color: var(--line); }
+button.lock.on { opacity: 1; color: var(--warn); border-color: var(--warn); }
+
+.pinned { border-color: var(--warn); }
+
+/* The codec's profile ladder. HE-AAC steps v2 -> v1 -> LC as the bitrate
+   rises and nothing else on the page moves when it does, so the rungs and the
+   rates they cover are drawn out with the live one lit. */
+.ladder { display: flex; gap: 4px; margin-top: 6px; }
+.ladder > div {
+  flex: 1;
+  text-align: center;
+  padding: 3px 2px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--dim);
+  line-height: 1.35;
+  min-width: 0;
+}
+.ladder > div b { display: block; font-weight: 600; }
+.ladder > div span { font-variant-numeric: tabular-nums; opacity: .8; }
+.ladder > div.on { color: var(--accent); border-color: var(--accent); }
+.ladder > div.on b { color: var(--accent); }
+
+/* Brief highlight on whatever the solver moved, so a field changing by itself
+   is visibly a consequence of the edit rather than the page misbehaving. */
+@keyframes moved { from { border-color: var(--accent); } to { border-color: var(--line); } }
+.moved { animation: moved 1.1s ease-out; }

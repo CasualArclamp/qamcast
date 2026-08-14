@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QAMcast - receive</title>
+<link rel="stylesheet" href="/modem.css">
+</head>
+<body>
+<h1>QAMcast <span>&mdash; receive</span></h1>
+<div class="sub">
+  <span id="conn">connecting</span> &middot; <span id="footprint">-</span>
+</div>
+
+<div class="grid">
+
+  <div class="panel">
+    <h2>Link</h2>
+    <div class="note" style="margin:0 0 8px">
+      Card rate, symbol rate and roll-off must match the transmitter &mdash;
+      none of them travel in the header. Modulation, code rate and codec do,
+      so those configure themselves.
+    </div>
+    <label>Preset</label>
+    <select id="preset"></select>
+
+    <label>Card sample rate</label>
+    <select id="sampleRate"></select>
+
+    <label>Symbol rate</label>
+    <select id="symbolRate"></select>
+
+    <label>Roll-off</label>
+    <select id="rolloff">
+      <option value="0.15">0.15</option>
+      <option value="0.2">0.20</option>
+      <option value="0.25" selected>0.25</option>
+      <option value="0.35">0.35</option>
+    </select>
+
+    <table style="margin-top:12px">
+      <tr><td>Expect signal at</td><td id="pBand">-</td></tr>
+      <tr><td>Samples/symbol</td><td id="pSps">-</td></tr>
+      <tr><td>Frame</td><td id="pFrame">-</td></tr>
+    </table>
+    <div class="note" id="pWarn">&nbsp;</div>
+  </div>
+
+  <div class="panel">
+    <h2>Input</h2>
+    <label>Capture device</label>
+    <select id="device"></select>
+    <label>Audio output</label>
+    <select id="outdev"></select>
+    <label style="display:inline"><input type="checkbox" id="allApis" style="width:auto"> show every host API</label>
+    <div class="row">
+      <button id="start" class="go">Listen</button>
+      <button id="stop" class="stop">Stop</button>
+    </div>
+    <div class="err" id="error"></div>
+
+    <label class="lockable">Volume
+      <span class="dim" id="volPct">100%</span>
+    </label>
+    <div class="row">
+      <input type="range" id="volume" min="0" max="100" value="100" step="1">
+      <button id="pause" style="flex:0 0 6.5em;margin:0">Pause</button>
+    </div>
+    <div class="note">
+      Monitoring only &mdash; a recording keeps the audio as recovered. Pause
+      mutes and stays live: the broadcast carries on regardless, so holding
+      your place would only put you further behind every second.
+    </div>
+
+    <div class="note">
+      Do not pick the same virtual cable for playback that you are listening
+      on, or the decoded audio goes straight back into the modem's input.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Status</h2>
+    <table>
+      <tr><td>Lock</td><td><span id="lock" class="pill">no signal</span></td></tr>
+      <tr><td>Sync quality</td><td id="corr">-</td></tr>
+      <tr><td>MODCOD</td><td id="modcod">-</td></tr>
+      <tr><td>Codec</td><td id="codec">-</td></tr>
+      <tr><td>Audio bitrate</td><td id="audiorate">-</td></tr>
+      <tr><td>Coding tools</td><td id="codectools">-</td></tr>
+      <tr><td>EVM</td><td id="evm">-</td></tr>
+      <tr><td>Carrier error</td><td id="freq">-</td></tr>
+      <tr><td>Clock error</td><td id="ppm">-</td></tr>
+      <tr><td>Frames</td><td id="frames">0</td></tr>
+      <tr><td>Header errors</td><td id="hdrerr">-</td></tr>
+      <tr><td>RS corrected</td><td id="rscorr">-</td></tr>
+      <tr><td>RS failed</td><td id="rsfail">-</td></tr>
+      <tr><td>Re-acquisitions</td><td id="resyncs">-</td></tr>
+      <tr><td>Frames bridged</td><td id="bridged">-</td></tr>
+      <tr><td>Audio buffered</td><td id="audiobuf">-</td></tr>
+    </table>
+    <label>Interleaver fill</label>
+    <div class="bar"><i id="fillBar" style="width:0%"></i></div>
+    <div class="note" id="fillNote">&nbsp;</div>
+  </div>
+
+  <div class="panel">
+    <h2>Now playing</h2>
+    <table>
+      <tr><td>Station</td><td id="pstation">-</td></tr>
+      <tr><td>Title</td><td id="ptitle">-</td></tr>
+      <tr><td>Artist</td><td id="partist">-</td></tr>
+    </table>
+    <div class="note">Programme-associated data, as received.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Auto-probe</h2>
+    <table>
+      <tr><td>Measured EVM</td><td id="probeSnr">-</td></tr>
+      <tr><td>Best MODCOD</td><td id="probeModcod">-</td></tr>
+      <tr><td>Would carry</td><td id="probeRate">-</td></tr>
+      <tr><td>Margin</td><td id="probeMargin">-</td></tr>
+    </table>
+    <div class="note">
+      What the measured channel would support. Apply it at the transmitter
+      &mdash; MODCOD is an operator setting, and changing it restarts the
+      interleaver.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Received spectrum</h2>
+    <canvas id="spectrum"></canvas>
+    <canvas id="waterfall"></canvas>
+    <div class="note" id="bandnote">&nbsp;</div>
+  </div>
+
+  <div class="panel">
+    <h2>Constellation</h2>
+    <canvas id="constellation"></canvas>
+    <div class="note">Equalised payload symbols.</div>
+  </div>
+
+</div>
+
+<script src="/scope.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let META = null;
+
+function fill(sel, items, value) {
+  sel.innerHTML = '';
+  items.forEach(it => {
+    const o = document.createElement('option');
+    o.value = it.value; o.textContent = it.text;
+    sel.appendChild(o);
+  });
+  if (value !== undefined && [...sel.options].some(o => o.value == value)) sel.value = value;
+}
+
+// The receiver has no bitrate or modulation to solve for -- it learns those
+// from the header. It still asks the server to work out the geometry so the
+// page can show where the signal should appear and warn about a symbol rate
+// the card cannot carry.
+async function resolve() {
+  if (!META) return;
+  const r = await control({
+    cmd: 'solve', driver: 'symbol_rate',
+    sample_rate: +$('sampleRate').value,
+    symbol_rate: +$('symbolRate').value,
+    rolloff: +$('rolloff').value,
+    modulation: 'QPSK', code_rate: '1/2', bitrate: 0,
+  });
+  if (r.error) { set('pWarn', r.error); return; }
+  set('pBand', `${(r.band[0]/1000).toFixed(1)} - ${(r.band[1]/1000).toFixed(1)} kHz`);
+  set('pSps', r.sps);
+  set('pFrame', r.frame_symbols + ' sym, ' + r.frame_ms + ' ms');
+  set('pWarn', r.fits ? ' '
+      : 'Does not fit under Nyquist on this card. Lower the symbol rate.');
+}
+
+function applyPreset() {
+  const name = $('preset').value;
+  const custom = name === 'CUSTOM';
+  $('sampleRate').disabled = !custom;
+  $('rolloff').disabled = !custom;
+  if (!custom) {
+    const p = META.profiles.find(x => x.name === name);
+    if (p) {
+      $('sampleRate').value = p.sample_rate;
+      $('rolloff').value = String(p.rolloff);
+      fill($('symbolRate'), (META.symbol_rates[p.sample_rate] || []).map(v => ({value: v, text: v + ' Bd'})), p.symbol_rate);
+    }
+  }
+  resolve();
+}
+
+control({cmd:'profiles'}).then(r => {
+  META = r;
+  fill($('preset'),
+       [{value:'CUSTOM', text:'Custom - set everything by hand'}]
+       .concat(r.profiles.map(p => ({value: p.name, text: p.label}))),
+       'WIDE48');
+  fill($('sampleRate'), r.sample_rates.map(v => ({value: v, text: (v/1000) + ' kHz'})), 48000);
+  applyPreset();
+});
+
+// See the note in tx.html: deviating from a preset must show as Custom, or
+// the page describes one link and Start requests another.
+function deviate() {
+  if ($('preset').value !== 'CUSTOM') {
+    $('preset').value = 'CUSTOM';
+    $('sampleRate').disabled = false;
+    $('rolloff').disabled = false;
+  }
+}
+
+$('preset').onchange = applyPreset;
+$('sampleRate').onchange = () => {
+  deviate();
+  fill($('symbolRate'), (META.symbol_rates[$('sampleRate').value] || []).map(v => ({value: v, text: v + ' Bd'})));
+  resolve();
+};
+$('symbolRate').onchange = () => { deviate(); resolve(); };
+$('rolloff').onchange = () => { deviate(); resolve(); };
+
+// ---- monitoring ----------------------------------------------------------
+// Sent to the server rather than applied here: the audio is played by the
+// receiver's own output device, not by this page, so there is nothing in the
+// browser to turn down.
+let PAUSED = false;
+function paintPause() {
+  $('pause').textContent = PAUSED ? 'Resume' : 'Pause';
+  $('pause').className = PAUSED ? 'go' : '';
+}
+$('volume').oninput = () => {
+  set('volPct', $('volume').value + '%');
+  control({cmd: 'volume', volume: +$('volume').value / 100});
+};
+$('pause').onclick = () => {
+  PAUSED = !PAUSED;
+  paintPause();
+  control({cmd: 'pause', paused: PAUSED});
+};
+paintPause();
+
+const drawSpec = makeSpectrum($('spectrum'), $('waterfall'));
+const drawConst = makeConstellation($('constellation'));
+
+// Which coding tools the transmitter has switched on. Both are inferred from
+// the codec id in the header, which is all the receiver is given -- there is
+// no separate flag on the wire, and there does not need to be: the codec
+// determines them.
+//   SBR  the top octave is reconstructed, not coded
+//   PS   stereo is rebuilt from parameters over a mono channel
+function tools(s) {
+  if (!s.codec) return '-';
+  const on = [];
+  if (s.sbr) on.push('SBR');
+  if (s.ps) on.push('PS');
+  // A stream passed through from a station is signalled as HE-AACv1 even when
+  // it is really v2, because Parametric Stereo is not readable from the ADTS
+  // header the transmitter probed. The decoder finds it regardless.
+  const maybe = s.sbr && !s.ps ? ' (+ PS if present)' : '';
+  return (on.length ? on.join(' + ') : 'none - fully coded') + maybe;
+}
+
+connect(s => {
+  set('conn', s.running ? 'listening' : 'connected');
+  if (s.running) set('footprint', s.footprint || '-');
+  set('bandnote', s.footprint || ' ');
+  const lock = s.locked ? 'locked' : (s.running ? 'searching' : 'no signal');
+  set('lock', lock, 'pill ' + (s.locked ? 'ok' : s.running ? 'warn' : ''));
+  set('corr', s.corr != null ? s.corr.toFixed(3) : '-');
+  set('modcod', s.modcod || '-');
+  set('codec', s.codec || '-');
+  // Measured off the arriving packets rather than read from the frame, so it
+  // tracks what the encoder is really sending -- VBR drift and all.
+  set('audiorate', s.audio_rate != null ? (s.audio_rate/1000).toFixed(1)+' kbps' : '-');
+  set('codectools', tools(s));
+  // The receiver is the authority on these -- another browser tab, or a
+  // restart that reopened the device, can have moved them.
+  if (s.paused !== undefined && s.paused !== PAUSED) { PAUSED = s.paused; paintPause(); }
+  if (s.volume !== undefined && document.activeElement !== $('volume')) {
+    const pct = Math.round(s.volume * 100);
+    if (+$('volume').value !== pct) { $('volume').value = pct; set('volPct', pct + '%'); }
+  }
+  set('evm', s.evm != null ? s.evm.toFixed(1)+' dB' : '-');
+  set('freq', s.freq != null ? s.freq.toFixed(2)+' Hz' : '-');
+  set('ppm', s.ppm != null ? s.ppm.toFixed(1)+' ppm' : '-');
+  set('frames', s.frames ?? 0);
+  set('hdrerr', s.header_errors ?? '-');
+  set('rscorr', s.rs_corrected ?? '-');
+  set('rsfail', s.rs_failed ?? '-', s.rs_failed ? 'pill bad' : '');
+  // A dropout should cost seconds, not a restart: the sync is re-acquired and
+  // the missing frames are bridged so the deinterleaver stays aligned.
+  set('resyncs', s.resyncs ?? '-');
+  set('bridged', s.bridged != null
+      ? s.bridged + (s.chain_resyncs ? ` (+${s.chain_resyncs} realign)` : '')
+      : '-');
+  set('audiobuf', s.audio_buffer != null ? s.audio_buffer.toFixed(1)+' s' : '-');
+  $('fillBar').style.width = Math.min(100,(s.fill ?? 0)*100)+'%';
+  set('fillNote', s.fill_note || ' ');
+  set('pstation', s.pad_station || '-');
+  set('ptitle', s.pad_title || '-');
+  set('partist', s.pad_artist || '-');
+  set('probeSnr', s.probe_snr != null ? s.probe_snr.toFixed(1)+' dB' : '-');
+  set('probeModcod', s.probe_modcod || '-');
+  set('probeRate', s.probe_rate ? (s.probe_rate/1000).toFixed(1)+' kbps' : '-');
+  set('probeMargin', s.probe_margin != null ? s.probe_margin.toFixed(1)+' dB' : '-');
+  if (s.error) set('error', s.error);
+  drawConst(s.constellation, s.const_first);
+  drawSpec(s.spectrum, s.band);
+});
+
+$('start').onclick = async () => {
+  set('error','');
+  const r = await control({cmd:'start',
+    profile: $('preset').value,
+    sample_rate: +$('sampleRate').value,
+    symbol_rate: +$('symbolRate').value,
+    rolloff: +$('rolloff').value,
+    device: $('device').value,
+    outdev: $('outdev').value});
+  if (r.error) set('error', r.error);
+};
+$('stop').onclick = () => control({cmd:'stop'});
+
+function loadDevices() {
+  control({cmd:'devices', all: $('allApis').checked}).then(r => {
+    const inp = $('device'), out = $('outdev');
+    inp.innerHTML = ''; out.innerHTML = '';
+    (r.inputs || []).forEach(x => {
+      const o = document.createElement('option');
+      o.value = x.index; o.textContent = x.name; if (x.default) o.selected = true;
+      inp.appendChild(o);
+    });
+    const f = document.createElement('option');
+    f.value = 'wav'; f.textContent = 'read tx.wav - no soundcard';
+    inp.appendChild(f);
+    (r.outputs || []).forEach(x => {
+      const o = document.createElement('option');
+      o.value = x.index; o.textContent = x.name; if (x.default) o.selected = true;
+      out.appendChild(o);
+    });
+    const n = document.createElement('option');
+    n.value = 'none'; n.textContent = 'no audio output';
+    out.appendChild(n);
+  });
+}
+$('allApis').onchange = loadDevices;
+loadDevices();
+</script>
+</body>
+</html>

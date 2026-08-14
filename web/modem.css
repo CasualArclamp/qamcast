@@ -78,6 +78,43 @@ h1 span { color: var(--dim); font-weight: 400; }
   .panel.span-all { grid-column: 1 / -1; }
 }
 
+/* The one panel worth looking at while it runs: the scopes side by side, with
+   the numbers that describe the same signal underneath them rather than in a
+   separate panel three columns away. */
+.scopes { display: grid; grid-template-columns: 1fr; gap: 10px; }
+@media (min-width: 720px) {
+  .scopes { grid-template-columns: 2fr 1fr; align-items: start; }
+}
+.scopes canvas + canvas { margin-top: 6px; }
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.stats > div {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 8px;
+  min-width: 0;
+}
+.stats span {
+  display: block;
+  color: var(--dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.stats b {
+  display: block;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 details.panel > summary {
   cursor: pointer;
   font-size: 11px;

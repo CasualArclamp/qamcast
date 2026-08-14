@@ -402,6 +402,11 @@ class Transmitter:
             "footprint": f"{str(modcod)} \u00b7 {profile.symbol_rate} Bd \u00b7 "
                          f"{lo/1000:.1f}-{hi/1000:.1f} kHz",
             "modcod": str(modcod),
+            # What this rung needs to be received. Quoted as Es/N0 but
+            # measured as EVM, which is the same number on a link whose only
+            # impairment is noise and a pessimistic one otherwise -- and it is
+            # the only thing the far end can actually measure.
+            "required_evm_db": modcod.required_evm_db,
             "net_rate": cap.net_bitrate,
             "audio_rate": meta["bitrate"],
             "codec": choice.name if choice else None,

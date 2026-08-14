@@ -14,9 +14,6 @@
 
 <div class="actions">
   <span id="lock" class="pill">no signal</span>
-  <span class="stat">MODCOD <b id="modcod">-</b></span>
-  <span class="stat">EVM <b id="evm">-</b></span>
-  <span class="stat">audio <b id="audiorate">-</b></span>
   <span class="spacer"></span>
   <span class="stat">vol <b id="volPct">100%</b></span>
   <input type="range" id="volume" min="0" max="100" value="100" step="1"
@@ -28,6 +25,46 @@
 <div class="err" id="error"></div>
 
 <div class="grid">
+
+  <!-- Everything that describes the signal in one place: the two scopes and
+       the numbers they are two views of. Split across panels, you were
+       reading a constellation in one column and the EVM that measures it in
+       another. -->
+  <div class="panel wide">
+    <h2>Signal</h2>
+    <div class="scopes">
+      <div>
+        <canvas id="spectrum"></canvas>
+        <canvas id="waterfall"></canvas>
+      </div>
+      <div>
+        <canvas id="constellation"></canvas>
+        <div class="note">Equalised payload symbols.</div>
+      </div>
+    </div>
+    <div class="stats">
+      <div><span>Es/N0</span><b id="evm">-</b></div>
+      <div><span>MODCOD</span><b id="modcod">-</b></div>
+      <div><span>Codec</span><b id="codec">-</b></div>
+      <div><span>Bitrate</span><b id="audiorate">-</b></div>
+      <div><span>Coding tools</span><b id="codectools">-</b></div>
+      <div><span>Sync</span><b id="corr">-</b></div>
+      <div><span>Carrier</span><b id="freq">-</b></div>
+      <div><span>Clock</span><b id="ppm">-</b></div>
+      <div><span>Frames</span><b id="frames">0</b></div>
+      <div><span>Buffered</span><b id="audiobuf">-</b></div>
+    </div>
+    <div class="note" id="bandnote">&nbsp;</div>
+    <label>Interleaver fill</label>
+    <div class="bar"><i id="fillBar" style="width:0%"></i></div>
+    <div class="note" id="fillNote">&nbsp;</div>
+    <div class="note">
+      Es/N0 is measured as EVM, so it is the effective figure &mdash; every
+      impairment counts against it, not just noise. That is deliberate: it is
+      what the MODCOD thresholds are quoted in, and it is the only thing a
+      receiver can actually measure.
+    </div>
+  </div>
 
   <div class="panel">
     <h2>Now playing</h2>
@@ -89,62 +126,35 @@
     </div>
   </div>
 
-  <!-- Split in two: what the radio is doing, and what the decoder is doing.
-       One sixteen-row table made every reading equally hard to find. -->
-  <div class="panel">
-    <h2>Signal</h2>
-    <table>
-      <tr><td>Sync quality</td><td id="corr">-</td></tr>
-      <tr><td>Carrier error</td><td id="freq">-</td></tr>
-      <tr><td>Clock error</td><td id="ppm">-</td></tr>
-      <tr><td>Frames</td><td id="frames">0</td></tr>
-      <tr><td>Re-acquisitions</td><td id="resyncs">-</td></tr>
-    </table>
-  </div>
-
-  <div class="panel">
-    <h2>Decoding</h2>
-    <table>
-      <tr><td>Codec</td><td id="codec">-</td></tr>
-      <tr><td>Coding tools</td><td id="codectools">-</td></tr>
-      <tr><td>Header errors</td><td id="hdrerr">-</td></tr>
-      <tr><td>RS corrected</td><td id="rscorr">-</td></tr>
-      <tr><td>RS failed</td><td id="rsfail">-</td></tr>
-      <tr><td>Frames bridged</td><td id="bridged">-</td></tr>
-      <tr><td>Audio buffered</td><td id="audiobuf">-</td></tr>
-    </table>
-    <label>Interleaver fill</label>
-    <div class="bar"><i id="fillBar" style="width:0%"></i></div>
-    <div class="note" id="fillNote">&nbsp;</div>
-  </div>
-
-  <div class="panel">
-    <h2>Auto-probe</h2>
-    <table>
-      <tr><td>Measured EVM</td><td id="probeSnr">-</td></tr>
-      <tr><td>Best MODCOD</td><td id="probeModcod">-</td></tr>
-      <tr><td>Would carry</td><td id="probeRate">-</td></tr>
-      <tr><td>Margin</td><td id="probeMargin">-</td></tr>
-    </table>
-    <div class="note">
-      What the measured channel would support. Apply it at the transmitter
-      &mdash; MODCOD is an operator setting, and changing it restarts the
-      interleaver.
+  <!-- Error counters and the auto-probe: worth having, not worth a column
+       each while the link is behaving. -->
+  <details class="panel span-all">
+    <summary>Diagnostics &mdash; error counters and what the channel would support</summary>
+    <div class="scopes" style="margin-top:10px">
+      <div>
+        <table>
+          <tr><td>Header errors</td><td id="hdrerr">-</td></tr>
+          <tr><td>RS corrected</td><td id="rscorr">-</td></tr>
+          <tr><td>RS failed</td><td id="rsfail">-</td></tr>
+          <tr><td>Re-acquisitions</td><td id="resyncs">-</td></tr>
+          <tr><td>Frames bridged</td><td id="bridged">-</td></tr>
+        </table>
+      </div>
+      <div>
+        <table>
+          <tr><td>Measured EVM</td><td id="probeSnr">-</td></tr>
+          <tr><td>Best MODCOD</td><td id="probeModcod">-</td></tr>
+          <tr><td>Would carry</td><td id="probeRate">-</td></tr>
+          <tr><td>Margin</td><td id="probeMargin">-</td></tr>
+        </table>
+        <div class="note">
+          What the measured channel would support. Apply it at the
+          transmitter &mdash; MODCOD is an operator setting, and changing it
+          restarts the interleaver.
+        </div>
+      </div>
     </div>
-  </div>
-
-  <div class="panel wide">
-    <h2>Received spectrum</h2>
-    <canvas id="spectrum"></canvas>
-    <canvas id="waterfall"></canvas>
-    <div class="note" id="bandnote">&nbsp;</div>
-  </div>
-
-  <div class="panel">
-    <h2>Constellation</h2>
-    <canvas id="constellation"></canvas>
-    <div class="note">Equalised payload symbols.</div>
-  </div>
+  </details>
 
 </div>
 

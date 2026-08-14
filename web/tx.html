@@ -18,9 +18,6 @@
      the bottom of a panel that had grown to hold four unrelated jobs. -->
 <div class="actions">
   <span id="state" class="pill">idle</span>
-  <span class="stat">MODCOD <b id="modcod">-</b></span>
-  <span class="stat">audio <b id="audiorate">-</b></span>
-  <span class="stat">spare <b id="spare">-</b></span>
   <span class="spacer"></span>
   <button id="start" class="go">Start</button>
   <button id="stop" class="stop">Stop</button>
@@ -28,6 +25,38 @@
 <div class="err" id="error"></div>
 
 <div class="grid">
+
+  <!-- The scopes and the numbers they are two views of, together. -->
+  <div class="panel wide">
+    <h2>Signal</h2>
+    <div class="scopes">
+      <div>
+        <canvas id="spectrum"></canvas>
+        <canvas id="waterfall"></canvas>
+      </div>
+      <div>
+        <canvas id="constellation"></canvas>
+        <div class="note">Transmitted symbols, before the channel.</div>
+      </div>
+    </div>
+    <div class="stats">
+      <div><span>MODCOD</span><b id="modcod">-</b></div>
+      <div><span>Needs Es/N0</span><b id="liveEvm">-</b></div>
+      <div><span>Channel rate</span><b id="netrate">-</b></div>
+      <div><span>Bitrate</span><b id="audiorate">-</b></div>
+      <div><span>Spare</span><b id="spare">-</b></div>
+      <div><span>Codec</span><b id="liveCodec">-</b></div>
+      <div><span>Coding tools</span><b id="liveTools">-</b></div>
+      <div><span>Frames</span><b id="frames">0</b></div>
+      <div><span>On air</span><b id="uptime">-</b></div>
+      <div><span>Peak</span><b id="peak">-</b></div>
+      <div><span>Clipping</span><b id="clip">-</b></div>
+    </div>
+    <div class="note" id="bandnote">&nbsp;</div>
+    <label>Encoder backlog</label>
+    <div class="bar"><i id="backlogBar" style="width:0%"></i></div>
+    <div class="note" id="backlogNote">&nbsp;</div>
+  </div>
 
   <div class="panel">
     <h2>Source</h2>
@@ -140,22 +169,6 @@
   </div>
 
   <div class="panel">
-    <h2>On air</h2>
-    <table>
-      <tr><td>Channel rate</td><td id="netrate">-</td></tr>
-      <tr><td>Codec</td><td id="liveCodec">-</td></tr>
-      <tr><td>Coding tools</td><td id="liveTools">-</td></tr>
-      <tr><td>Frames sent</td><td id="frames">0</td></tr>
-      <tr><td>On air</td><td id="uptime">-</td></tr>
-      <tr><td>Peak level</td><td id="peak">-</td></tr>
-      <tr><td>Clipping</td><td id="clip">-</td></tr>
-    </table>
-    <label>Encoder backlog</label>
-    <div class="bar"><i id="backlogBar" style="width:0%"></i></div>
-    <div class="note" id="backlogNote">&nbsp;</div>
-  </div>
-
-  <div class="panel">
     <h2>Metadata (PAD)</h2>
     <label style="display:inline"><input type="checkbox" id="autoMeta" style="width:auto">
       follow the station &mdash; take the song from the stream</label>
@@ -172,19 +185,6 @@
       anything transmitted only at the start &mdash; and so has the
       interleaver's fill region.
     </div>
-  </div>
-
-  <div class="panel wide">
-    <h2>Transmitted spectrum</h2>
-    <canvas id="spectrum"></canvas>
-    <canvas id="waterfall"></canvas>
-    <div class="note" id="bandnote">&nbsp;</div>
-  </div>
-
-  <div class="panel">
-    <h2>Constellation</h2>
-    <canvas id="constellation"></canvas>
-    <div class="note">Transmitted symbols, before the channel.</div>
   </div>
 
   <!-- A test aid, not an operating control, so it stays folded away until
@@ -678,6 +678,7 @@ connect(s => {
   set('conn', s.running ? 'live' : 'connected');
   set('state', s.running ? 'on air' : 'idle', 'pill ' + (s.running ? 'ok' : ''));
   set('modcod', s.modcod || '-');
+  set('liveEvm', s.required_evm_db != null ? s.required_evm_db.toFixed(1)+' dB' : '-');
   set('netrate', s.net_rate ? (s.net_rate/1000).toFixed(1)+' kbps' : '-');
   set('audiorate', s.audio_rate ? (s.audio_rate/1000).toFixed(1)+' kbps' : '-');
   set('liveCodec', (s.codec || '-') + (s.passthrough ? ' (passed through)' : ''),

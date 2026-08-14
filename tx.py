@@ -73,6 +73,7 @@ class Transmitter:
         self._icy: icy.Poller | None = None
         self._meta_swap = False
         self._nowplaying: dict | None = None
+        self._source = ""
         self.error: str | None = None
 
     # -- control ---------------------------------------------------------
@@ -144,8 +145,10 @@ class Transmitter:
                 "detected": self._probe.get("label") if self._probe else None}
 
     def stop(self) -> dict:
+        # The follow is governed by its own checkbox, not by whether anything
+        # is on air -- so stopping the transmitter leaves the panel still
+        # showing what the station is playing.
         self._stop.set()
-        self._stop_metadata()
         if self._thread:
             self._thread.join(timeout=5)
         return {"ok": True}
@@ -161,18 +164,34 @@ class Transmitter:
     def _start_metadata(self, source: str, cfg: dict) -> None:
         """Follow the station's own song metadata, if it has any.
 
+        Runs whether or not anything is being transmitted, so the panel is
+        already current when Start is pressed rather than stale until the
+        first poll after it.
+
         Only for HTTP sources: ICY metadata is an HTTP-layer thing, and a
         local file has nothing to poll. The station name stays whatever the
         operator typed unless they left it blank -- a broadcaster relaying a
         stream is not necessarily happy to be renamed by it.
         """
-        self._stop_metadata()
+        source = str(source or "")
+        if source:
+            self._source = source
         if not cfg.get("auto_metadata"):
+            self._stop_metadata()
             return
-        if not str(source).lower().startswith(("http://", "https://")):
+        if not source.lower().startswith(("http://", "https://")):
+            self._stop_metadata()
             self._nowplaying = None
             return
-        self._meta_swap = bool(cfg.get("swap_artist"))
+        self._meta_swap = bool(cfg.get("swap_artist", self._meta_swap))
+        # Already following this stream: keep it rather than throwing away the
+        # song in hand and waiting a whole poll for the next one. Start()
+        # calls through here too, so going on air does not interrupt a follow
+        # that was already running.
+        if self._icy is not None and self._icy.url == source:
+            self._icy.set_swap(self._meta_swap)
+            return
+        self._stop_metadata()
         self._icy = icy.Poller(source, self._on_metadata,
                                swap=self._meta_swap)
         self._icy.start()
@@ -187,6 +206,17 @@ class Transmitter:
             station = self._pad.station or np.station
             self._pad = transport.Pad(station, np.title, np.artist)
             self._nowplaying = np.as_dict()
+        # On air, the 20 Hz publisher carries this out with everything else.
+        # Idle, nothing else is publishing at all, so a song change would not
+        # reach the page until something else happened to push a state.
+        if not (self._thread and self._thread.is_alive()):
+            self._state = {**self._state, "running": False,
+                           "nowplaying": self._nowplaying,
+                           "pad_station": self._pad.station,
+                           "pad_title": self._pad.title,
+                           "pad_artist": self._pad.artist,
+                           "meta_error": self._icy.error if self._icy else None}
+            self.telemetry.publish(self._state)
 
     def set_metadata(self, cfg: dict) -> dict:
         """Turn stream metadata on or off, or flip the artist/title order."""
@@ -194,10 +224,18 @@ class Transmitter:
             self._meta_swap = bool(cfg["swap_artist"])
             if self._icy is not None:
                 self._icy.set_swap(self._meta_swap)
-        if "auto_metadata" in cfg and not cfg["auto_metadata"]:
-            self._stop_metadata()
+        # Turning it on has to *start* the poller, not merely record the
+        # intention. Without this, ticking the box after Start filled the
+        # fields once from a one-shot read and then nothing ever polled again,
+        # so every later song had to be pushed out by hand.
+        if "auto_metadata" in cfg:
+            self._start_metadata(
+                cfg.get("source") or self._source,
+                {"auto_metadata": cfg["auto_metadata"],
+                 "swap_artist": self._meta_swap})
         return {"ok": True, "nowplaying": self._nowplaying,
-                "swap_artist": self._meta_swap}
+                "swap_artist": self._meta_swap,
+                "following": self._icy is not None}
 
     def nowplaying(self, msg: dict) -> dict:
         """One-shot read, so the page can show a song before going on air."""

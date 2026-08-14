@@ -9,7 +9,8 @@
 <body>
 <h1>QAMcast <span>&mdash; receive</span></h1>
 <div class="sub">
-  <span id="conn">connecting</span> &middot; <span id="footprint">-</span>
+  <span id="conn">connecting</span> &middot; <span id="footprint">-</span> &middot;
+  <span id="explain">notes</span>
 </div>
 
 <div class="actions">
@@ -39,15 +40,15 @@
       </div>
       <div>
         <canvas id="constellation"></canvas>
-        <div class="note">Equalised payload symbols.</div>
+        <div class="note why">Equalised payload symbols.</div>
       </div>
     </div>
     <div class="stats">
       <div><span>Es/N0</span><b id="evm">-</b></div>
-      <div><span>MODCOD</span><b id="modcod">-</b></div>
+      <div class="w2"><span>MODCOD</span><b id="modcod">-</b></div>
       <div><span>Codec</span><b id="codec">-</b></div>
       <div><span>Bitrate</span><b id="audiorate">-</b></div>
-      <div><span>Coding tools</span><b id="codectools">-</b></div>
+      <div class="w2"><span>Coding tools</span><b id="codectools">-</b></div>
       <div><span>Sync</span><b id="corr">-</b></div>
       <div><span>Carrier</span><b id="freq">-</b></div>
       <div><span>Clock</span><b id="ppm">-</b></div>
@@ -58,7 +59,7 @@
     <label>Interleaver fill</label>
     <div class="bar"><i id="fillBar" style="width:0%"></i></div>
     <div class="note" id="fillNote">&nbsp;</div>
-    <div class="note">
+    <div class="note why">
       Es/N0 is measured as EVM, so it is the effective figure &mdash; every
       impairment counts against it, not just noise. That is deliberate: it is
       what the MODCOD thresholds are quoted in, and it is the only thing a
@@ -73,7 +74,7 @@
       <tr><td>Title</td><td id="ptitle">-</td></tr>
       <tr><td>Artist</td><td id="partist">-</td></tr>
     </table>
-    <div class="note">
+    <div class="note why">
       Programme-associated data, as received. Volume and pause above are
       monitoring only &mdash; a recording keeps the audio as recovered, and
       pause mutes and stays live rather than holding your place, since the
@@ -83,7 +84,7 @@
 
   <div class="panel">
     <h2>Link</h2>
-    <div class="note" style="margin:0 0 8px">
+    <div class="note why" style="margin:0 0 8px">
       Card rate, symbol rate and roll-off must match the transmitter &mdash;
       none of them travel in the header. Modulation, code rate and codec do,
       so those configure themselves.
@@ -120,7 +121,7 @@
     <label>Audio output</label>
     <select id="outdev"></select>
     <label style="display:inline"><input type="checkbox" id="allApis" style="width:auto"> show every host API</label>
-    <div class="note">
+    <div class="note why">
       Do not pick the same virtual cable for playback that you are listening
       on, or the decoded audio goes straight back into the modem's input.
     </div>
@@ -147,7 +148,7 @@
           <tr><td>Would carry</td><td id="probeRate">-</td></tr>
           <tr><td>Margin</td><td id="probeMargin">-</td></tr>
         </table>
-        <div class="note">
+        <div class="note why">
           What the measured channel would support. Apply it at the
           transmitter &mdash; MODCOD is an operator setting, and changing it
           restarts the interleaver.
@@ -390,6 +391,7 @@ function loadDevices() {
 }
 $('allApis').onchange = loadDevices;
 loadDevices();
+initExplain();
 </script>
 </body>
 </html>

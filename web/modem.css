@@ -99,6 +99,10 @@ h1 span { color: var(--dim); font-weight: 400; }
   padding: 5px 8px;
   min-width: 0;
 }
+/* Some readings are simply longer than a cell: "MODCOD08 64QAM 2/3" does not
+   fit 112 px at any sensible size, and clipping the modulation off a MODCOD
+   loses the part you were reading it for. Give those two cells' width. */
+.stats > div.w2 { grid-column: span 2; }
 .stats span {
   display: block;
   color: var(--dim);
@@ -193,6 +197,20 @@ button.stop { background: #6e2530; border-color: #8b2c3b; color: #fff; }
 .bar > i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
 
 .note { color: var(--dim); font-size: 11px; margin-top: 8px; line-height: 1.45; }
+
+/* Explanatory prose, off by default. It earns its place the first time you
+   meet a panel and is in the way every time after, so it is one toggle rather
+   than a disclosure widget in every panel. Notes carrying live state are not
+   marked `why` and always show. */
+.why { display: none; }
+body.explain .why { display: block; }
+#explain {
+  color: var(--dim);
+  cursor: pointer;
+  border-bottom: 1px dotted var(--line);
+}
+#explain:hover { color: var(--text); }
+body.explain #explain { color: var(--accent); border-bottom-color: var(--accent); }
 .err { color: var(--bad); font-size: 12px; margin-top: 8px; word-break: break-word; }
 .warn { color: var(--warn); }
 .dim { color: var(--dim); font-weight: 400; }

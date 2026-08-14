@@ -29,22 +29,33 @@ function hidpi(canvas, cssHeight) {
   return { ctx, w, h: cssHeight };
 }
 
-// Constellation with persistence. The transmitter only produces a frame every
-// 250 ms or so, so redrawing from scratch each time flickers; fading the
-// previous draw instead leaves a trail that makes the cloud readable and the
-// update look continuous rather than steppy.
-function makeConstellation(canvas) {
-  let last = null, fresh = false;
-  return function draw(points, isFirst) {
-    fresh = !!points;
-    if (points) last = points;
-    const { ctx, w, h } = hidpi(canvas, canvas.clientWidth);
+// Symbols arrive a slice at a time, four to a frame, so a single slice is
+// not a whole picture. This keeps the last few and redraws all of them fully
+// opaque on every new one, clearing first.
+//
+// It used to fade the previous draw instead. That gives continuity, but the
+// trail is drawn at every brightness between full and invisible, and against
+// a dense constellation the half-faded symbols read as scatter around the
+// real ones -- which is exactly what you are looking at the plot to judge.
+// Old points now disappear when they age out of the window rather than
+// dimming through it, so every dot on screen is a symbol that was really
+// received, at one brightness.
+const CONST_SLICES = 4;      // matches scope.SYMBOL_SLICES: one frame's worth
 
-    // Symbols arrive a slice at a time, so the fade has to be gentle enough
-    // that earlier slices are still visible when the last one lands -- that
-    // is what makes the separate slices read as one cloud. A new frame fades
-    // harder, to clear the previous one out of the way.
-    ctx.fillStyle = isFirst ? 'rgba(5,8,13,0.40)' : 'rgba(5,8,13,0.10)';
+function makeConstellation(canvas) {
+  let recent = [], drawn = false;
+  return function draw(points, _isFirst) {
+    // Nothing new: leave the canvas alone. Redrawing identical content every
+    // animation frame would cost work for no change.
+    if (!points && drawn) return;
+    if (points) {
+      recent.push(points);
+      while (recent.length > CONST_SLICES) recent.shift();
+    }
+    const { ctx, w, h } = hidpi(canvas, canvas.clientWidth);
+    drawn = true;
+
+    ctx.fillStyle = '#05080d';
     ctx.fillRect(0, 0, w, h);
 
     const cx = w / 2, cy = h / 2, s = Math.min(w, h) / 2 / 1.45;
@@ -55,20 +66,18 @@ function makeConstellation(canvas) {
     ctx.moveTo(0, cy); ctx.lineTo(w, cy);
     ctx.stroke();
 
-    if (!last || !last.length) {
+    if (!recent.length) {
       ctx.fillStyle = '#8b949e';
       ctx.font = '12px ui-monospace, monospace';
       ctx.textAlign = 'center';
       ctx.fillText('no signal', cx, cy - 6);
       return;
     }
-    // Only paint on a slice that actually arrived; redrawing the same points
-    // every animation frame would darken them against the fade and make the
-    // cloud pulse.
-    if (!fresh) return;
-    ctx.fillStyle = 'rgba(88,166,255,0.85)';
-    for (let i = 0; i < last.length; i += 2) {
-      ctx.fillRect(cx + last[i] * s - 0.75, cy - last[i + 1] * s - 0.75, 1.5, 1.5);
+    ctx.fillStyle = '#58a6ff';
+    for (const arr of recent) {
+      for (let i = 0; i < arr.length; i += 2) {
+        ctx.fillRect(cx + arr[i] * s - 0.75, cy - arr[i + 1] * s - 0.75, 1.5, 1.5);
+      }
     }
   };
 }
@@ -186,9 +195,39 @@ function low(v, good, ok) {
   return a <= good ? 'good' : a <= ok ? 'warn' : 'bad';
 }
 
+// One toggle for every explanatory note on the page, remembered across
+// reloads. The prose is worth reading once and in the way thereafter.
+function initExplain() {
+  const el = document.getElementById('explain');
+  const paint = () => {
+    if (el) el.textContent = document.body.classList.contains('explain')
+        ? 'hide notes' : 'notes';
+  };
+  let on = false;
+  try { on = localStorage.getItem('qamcast.explain') === '1'; } catch (_) {}
+  document.body.classList.toggle('explain', on);
+  paint();
+  if (!el) return;
+  el.onclick = e => {
+    e.preventDefault();
+    const now = !document.body.classList.contains('explain');
+    document.body.classList.toggle('explain', now);
+    try { localStorage.setItem('qamcast.explain', now ? '1' : '0'); } catch (_) {}
+    paint();
+  };
+}
+
 function set(id, text, cls) {
   const el = document.getElementById(id);
   if (!el) return;
   if (el.textContent !== String(text)) el.textContent = text;
   if (cls !== undefined) el.className = cls;
+  // Stat cells clip with an ellipsis rather than reflowing the grid, so keep
+  // the full text reachable on hover. Only for stats: everything else either
+  // has room or wraps.
+  if (el.tagName === 'B' && el.parentElement
+      && el.parentElement.parentElement
+      && el.parentElement.parentElement.classList.contains('stats')) {
+    el.title = String(text);
+  }
 }

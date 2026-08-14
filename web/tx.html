@@ -10,7 +10,8 @@
 <h1>QAMcast <span>&mdash; transmit</span></h1>
 <div class="sub">
   <span id="conn">connecting</span> &middot;
-  <span id="footprint">-</span>
+  <span id="footprint">-</span> &middot;
+  <span id="explain">notes</span>
 </div>
 
 <!-- The one control that matters, above everything and always in the same
@@ -36,17 +37,17 @@
       </div>
       <div>
         <canvas id="constellation"></canvas>
-        <div class="note">Transmitted symbols, before the channel.</div>
+        <div class="note why">Transmitted symbols, before the channel.</div>
       </div>
     </div>
     <div class="stats">
-      <div><span>MODCOD</span><b id="modcod">-</b></div>
+      <div class="w2"><span>MODCOD</span><b id="modcod">-</b></div>
       <div><span>Needs Es/N0</span><b id="liveEvm">-</b></div>
       <div><span>Channel rate</span><b id="netrate">-</b></div>
       <div><span>Bitrate</span><b id="audiorate">-</b></div>
       <div><span>Spare</span><b id="spare">-</b></div>
       <div><span>Codec</span><b id="liveCodec">-</b></div>
-      <div><span>Coding tools</span><b id="liveTools">-</b></div>
+      <div class="w2"><span>Coding tools</span><b id="liveTools">-</b></div>
       <div><span>Frames</span><b id="frames">0</b></div>
       <div><span>On air</span><b id="uptime">-</b></div>
       <div><span>Peak</span><b id="peak">-</b></div>
@@ -145,7 +146,7 @@
         <select id="codeRate"></select>
       </div>
     </div>
-    <div class="note">
+    <div class="note why">
       Symbol rate, MODCOD and bitrate are three views of one number: fix any
       two and the third follows. Lock what you want held, edit anything, and
       whatever is still free absorbs the change. Locking the symbol rate is the
@@ -180,7 +181,7 @@
     <label>Title</label><input id="title">
     <label>Artist</label><input id="artist">
     <button id="sendPad">Update</button>
-    <div class="note">
+    <div class="note why">
       Sent repeatedly, not once. A receiver joining mid-broadcast has missed
       anything transmitted only at the start &mdash; and so has the
       interleaver's fill region.
@@ -191,7 +192,7 @@
        it is wanted rather than sitting among the things that go on air. -->
   <details class="panel span-all">
     <summary>Channel simulator &mdash; impairments for testing</summary>
-    <div class="note" style="margin:8px 0">
+    <div class="note why" style="margin:8px 0">
       Applied to the transmitted audio, so the receiver under test stays
       unmodified. Leave off for a real link.
     </div>
@@ -638,22 +639,35 @@ async function readNowPlaying() {
   showNowPlaying(r.error ? null : r, r.error);
 }
 
-$('autoMeta').onchange = () => {
+function paintFollow() {
   const on = $('autoMeta').checked;
   // Read-only rather than disabled: still selectable and copyable, and it is
   // obvious the station owns them now.
   $('title').readOnly = on;
   $('artist').readOnly = on;
+  // Following means the song needs no button. What is left to push by hand is
+  // the station name, so the button says that rather than implying the rest
+  // is still manual.
+  $('sendPad').textContent = on ? 'Update station name' : 'Update';
+}
+
+$('autoMeta').onchange = () => {
+  const on = $('autoMeta').checked;
+  paintFollow();
   if (on) readNowPlaying();
   else { set('metaNote', ' '); $('metaNote').className = 'note'; }
-  control({cmd: 'metadata', auto_metadata: on,
+  // The source travels with it: the server starts its own poller on this and
+  // has no other way to know which stream to follow before Start.
+  control({cmd: 'metadata', auto_metadata: on, source: currentSource(),
            swap_artist: $('swapArtist').checked});
 };
 $('swapArtist').onchange = () => {
-  control({cmd: 'metadata', swap_artist: $('swapArtist').checked})
+  control({cmd: 'metadata', swap_artist: $('swapArtist').checked,
+           source: currentSource()})
     .then(r => { if (r.nowplaying) showNowPlaying(r.nowplaying); });
   if ($('autoMeta').checked) readNowPlaying();
 };
+paintFollow();
 
 $('sourceMode').onchange = showStations;
 $('station').onchange = pickStation;
@@ -716,7 +730,7 @@ connect(s => {
   }
   // While running, the PAD boxes follow what the poller found, so the page
   // shows what is actually on air rather than what was typed before Start.
-  if (s.running && $('autoMeta').checked) {
+  if ($('autoMeta').checked) {
     if (s.nowplaying) showNowPlaying(s.nowplaying, s.meta_error);
     else if (s.meta_error) showNowPlaying(null, s.meta_error);
   }
@@ -776,6 +790,7 @@ function loadDevices() {
 }
 $('allApis').onchange = loadDevices;
 loadDevices();
+initExplain();
 </script>
 </body>
 </html>

@@ -335,9 +335,14 @@ def pilot_slots(profile: Profile) -> np.ndarray:
     return np.arange(profile.pilot_groups, dtype=np.int64) * profile.pilot_spacing + pos
 
 
-def build_frame(profile: Profile, modcod: Modcod, header: Header,
-                payload_bytes: np.ndarray) -> np.ndarray:
-    """Assemble one frame's worth of symbols.
+def channel_bits(profile: Profile, modcod: Modcod, header: Header,
+                 payload_bytes: np.ndarray) -> np.ndarray:
+    """Signalling and payload, scrambled and convolutionally coded.
+
+    Everything a frame carries except the layout: the same bits go out
+    whether they are laid along a single carrier or spread across OFDM
+    subcarriers, which is what lets the two modes share one FEC chain, one
+    signalling format and one set of measured MODCOD thresholds.
 
     ``payload_bytes`` is the interleaved, RS-coded byte stream for this frame,
     exactly ``capacity.frame_bytes`` long.
@@ -373,8 +378,13 @@ def build_frame(profile: Profile, modcod: Modcod, header: Header,
         filler = np.unpackbits(_scramble_mask((need - len(channel) + 7) // 8,
                                               0x1234 ^ header.frame_count))
         channel = np.concatenate([channel, filler[:need - len(channel)]])
-    channel = channel[:need]
+    return channel[:need]
 
+
+def build_frame(profile: Profile, modcod: Modcod, header: Header,
+                payload_bytes: np.ndarray) -> np.ndarray:
+    """Assemble one single-carrier frame's worth of symbols."""
+    channel = channel_bits(profile, modcod, header, payload_bytes)
     symbols = np.empty(profile.frame_symbols, dtype=np.complex128)
     symbols[:PREAMBLE_SYMBOLS] = preamble()
     symbols[PREAMBLE_SYMBOLS:PREAMBLE_SYMBOLS + HEADER_SYMBOLS] = encode_modcod(modcod.index)
@@ -391,12 +401,22 @@ def parse_frame(profile: Profile, modcod: Modcod, symbols: np.ndarray,
     Returns ``(None, None)`` when the signalling CRC fails, which is the
     receiver's lock test now that MODCOD arrives separately as a codeword.
     """
-    cap = profile.capacity(modcod)
     slots = data_slots(profile)
-    data = symbols[slots]
+    return decode_payload(profile, modcod, symbols[slots], noise_var,
+                          csi=None if csi is None else csi[slots])
+
+
+def decode_payload(profile: Profile, modcod: Modcod, data: np.ndarray,
+                   noise_var: float, csi: np.ndarray | None = None
+                   ) -> tuple["Header | None", np.ndarray | None]:
+    """Payload-carrying symbols back to (header, payload bytes).
+
+    The layout-free half of parse_frame, so OFDM can hand over the symbols it
+    pulled off its subcarriers and get the identical decode.
+    """
+    cap = profile.capacity(modcod)
     llr = constellation.demodulate_soft(
-        data, modcod.bits_per_symbol, noise_var,
-        csi=None if csi is None else csi[slots],
+        data, modcod.bits_per_symbol, noise_var, csi=csi,
     )
     need = conv.channel_bits_for(cap.info_bits, modcod.conv_num, modcod.conv_den)
     info = conv.decode(llr[:need], modcod.conv_num, modcod.conv_den, cap.info_bits)

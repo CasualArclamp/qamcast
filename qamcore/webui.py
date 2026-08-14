@@ -45,7 +45,10 @@ def profile_list() -> list[dict]:
             "pilot_spacing": p.pilot_spacing,
             "max_bitrate": int(p.net_bitrate(top)),
             "band": [round(p.band[0]), round(p.band[1])],
-            "label": f"{name} - {khz:g} kHz card, up to {p.net_bitrate(top) / 1000:.0f} kbps",
+            "mode": p.mode,
+            "label": (f"{name} - {khz:g} kHz card, "
+                      f"{'OFDM, ' if p.is_ofdm else ''}"
+                      f"up to {p.net_bitrate(top) / 1000:.0f} kbps"),
             "description": p.description,
         })
     out.sort(key=lambda d: (-d["sample_rate"], -d["max_bitrate"]))

@@ -132,6 +132,62 @@ the waveform has a 10 dB peak-to-average ratio, so peaks want to sit near
 it folds energy across the whole constellation at once, and 256QAM has no
 margin to absorb it.
 
+## OFDM mode
+
+Four profiles carry the same bands over OFDM instead of a single carrier, so a
+link can move between the two without re-planning the spectrum:
+
+| Profile | Fs | Carriers | Spacing | Prefix | Occupied | Top rate |
+|---|---|---|---|---|---|---|
+| `OFDM96` | 96 kHz | 409 | 93.8 Hz | 1.33 ms | 3.8–42.2 kHz | 175 kbps |
+| `OFDM48` | 48 kHz | 204 | 93.8 Hz | 1.33 ms | 0.9–20.1 kHz | 87 kbps |
+| `OFDM44` | 44.1 kHz | 204 | 86.1 Hz | 1.45 ms | 1.2–18.8 kHz | 80 kbps |
+| `OFDMRADIO` | 48 kHz | 127 | 93.8 Hz | 2.67 ms | 1.0–12.9 kHz | 49 kbps |
+
+It exists because the single-carrier equaliser cannot be made to reach
+further. It corrects ±12 symbols, and training a longer one on the *true*
+transmitted symbols was measured to buy only 1–3.5 dB, so that limit is real
+rather than a tuning failure. OFDM does not invert the echo at all: a cyclic
+prefix longer than the delay spread makes the channel circular, and
+equalisation becomes one exact divide per subcarrier.
+
+Measured on WIDE48 against OFDM48, 16QAM, −6 dB echo, 30 dB SNR:
+
+| echo | single carrier | OFDM |
+|---|---|---|
+| 0.00 ms | 29.2 dB | 28.7 dB |
+| 0.60 ms | 12.0 dB | **25.4 dB** |
+| 0.90 ms | no lock | **22.9 dB** |
+| 1.33 ms | no lock | **18.6 dB** |
+| 1.60 ms | no lock | **14.1 dB** |
+| 2.50 ms | no lock | 10.3 dB |
+
+The cost is about 12% of the payload symbol rate to the prefix and pilots, and
+a 13.5 dB peak-to-average ratio against 10 — so the modulator sits 3 dB lower
+and the drive wants setting with more care.
+
+Everything above the physical layer is shared: the same FEC, the same
+signalling, the same MODCOD table and thresholds, the same transport and PAD.
+Only the symbol layout differs, which is why an OFDM profile needs no special
+case in the transport chain or the interleaver.
+
+**One thing OFDM needs that single carrier does not** is carrier frequency
+correction. An offset is a fraction of a subcarrier spacing, and any fraction
+destroys the orthogonality the scheme rests on — 15 Hz against 93.8 Hz spacing
+took the lock rate from 23/23 to 1/23, while an echo and 20 ppm of clock error
+did nothing at all. It is estimated from the pilots' phase progression across
+a frame and corrected in the time domain before the transform, since the
+damage is interference done before it. Measured recovery: exact to 0.01 Hz at
+offsets of 5, 15 and 30 Hz.
+
+**Known limitation.** OFDM passes the clean and AWGN channels on every profile
+and MODCOD tried, and beats single carrier decisively on multipath. It does
+*not* yet pass the `radio` and `noisy` simulator presets, which combine a
+frequency offset with clock error and echoes: about 15% of frames are lost
+ongoing, and the interleaver never fills. Single carrier passes both. The
+remaining work is residual sampling-frequency-offset tracking, not
+architecture.
+
 ## MODCOD ladder
 
 MODCOD sets the payload rate *inside* the footprint, and travels in the frame.
@@ -344,6 +400,7 @@ qamcore/            the wire format — one copy, both ends
   codec.py          Opus and HE-AAC through ffmpeg, probing, passthrough
   streams.py        .pls/.m3u playlists folded into stations and their rates
   icy.py            Icecast/Shoutcast now-playing metadata
+  ofdm.py           OFDM: geometry, modulator, demodulator, coded frames
   ogg.py            Ogg pages, so Opus packets can be carried bare
   scope.py          telemetry for the spectrum and constellation displays
   webui.py          local UI: static files, SSE telemetry, JSON control

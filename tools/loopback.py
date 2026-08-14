@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from qamcore import channel as CH  # noqa: E402
 from qamcore import demodulator as D  # noqa: E402
-from qamcore import framing, modulator, profiles, transport  # noqa: E402
+from qamcore import framing, modulator, ofdm, profiles, transport  # noqa: E402
 
 
 def run(profile_name: str, modcod_index: int, preset: str, snr: float | None,
@@ -42,9 +42,11 @@ def run(profile_name: str, modcod_index: int, preset: str, snr: float | None,
     print()
 
     tx = transport.TransmitChain(profile, modcod)
-    mod = modulator.Modulator(profile)
+    mod = (ofdm.CodedModulator(profile) if profile.is_ofdm
+           else modulator.Modulator(profile))
     chan = CH.Channel(profile, cfg)
-    dem = D.Demodulator(profile)
+    dem = (ofdm.CodedDemodulator(profile) if profile.is_ofdm
+           else D.Demodulator(profile))
     rx = transport.ReceiveChain(profile, modcod)
 
     pad = transport.Pad("QAM TEST", "Loopback", "qamcore")

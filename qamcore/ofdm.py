@@ -36,7 +36,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import framing
+# framing is imported inside the functions that need it, not here. It imports
+# profiles, and profiles imports this module for OfdmGeometry -- at module
+# level that is a cycle, and it fails on the profile validation that runs at
+# import time. Nothing above the coded wrappers needs framing anyway.
 
 # Subcarriers carrying a known reference inside the data symbols, for tracking
 # phase drift between preambles. One in twelve costs 8% and is what keeps
@@ -237,6 +240,7 @@ def _modcod_spectrum(geo: OfdmGeometry, modcod_index: int) -> np.ndarray:
     free processing gain on the one field everything else waits for -- the
     payload cannot be demapped until the MODCOD is known.
     """
+    from . import framing
     word = framing.encode_modcod(modcod_index)
     reps = int(np.ceil(geo.carriers / len(word)))
     return np.tile(word, reps)[:geo.carriers]
@@ -305,6 +309,7 @@ class OfdmResult:
     evm_db: float = 0.0
     corr_peak: float = 0.0
     timing_offset: int = 0
+    cfo_hz: float = 0.0
 
     @property
     def locked(self) -> bool:
@@ -317,6 +322,21 @@ class OfdmStats:
     modcod_ok: int = 0
     modcod_failed: int = 0
     resyncs: int = 0
+
+    # Named as the single-carrier stats are, so the receiver's status panel
+    # reads either without knowing which mode produced it.
+    @property
+    def headers_ok(self) -> int:
+        return self.modcod_ok
+
+    @property
+    def headers_failed(self) -> int:
+        return self.modcod_failed
+
+    @property
+    def header_error_rate(self) -> float:
+        total = self.modcod_ok + self.modcod_failed
+        return self.modcod_failed / total if total else 0.0
 
 
 class Demodulator:
@@ -344,6 +364,13 @@ class Demodulator:
         self._ref_norm = self._ref / np.linalg.norm(self._ref)
         self._known = reference(geo.carriers)
         self._chan: np.ndarray | None = None
+        # Running carrier frequency offset estimate, Hz. OFDM needs this in a
+        # way single carrier does not: an offset is a fraction of a subcarrier
+        # spacing, and any fraction destroys the orthogonality the whole
+        # scheme rests on, turning every neighbour into interference. Measured
+        # here, 15 Hz against 93.8 Hz spacing -- 16% -- took the lock rate from
+        # 23/23 to 1/23 while an echo and 20 ppm of clock error did nothing.
+        self._cfo = 0.0
 
     def feed(self, samples: np.ndarray) -> None:
         self._buf = np.concatenate([self._buf, np.asarray(samples, dtype=float)])
@@ -422,9 +449,25 @@ class Demodulator:
             self._buf = self._buf[cut:]
             self._start += cut
 
+    def _derotate(self, frame: np.ndarray) -> np.ndarray:
+        """Shift the whole frame down by the estimated offset.
+
+        Done in the time domain, before the transform, because the damage is
+        inter-carrier interference rather than a phase error -- correcting
+        phases after the FFT would leave every subcarrier still leaking into
+        its neighbours. The signal is real, so it goes via its analytic form
+        to be shifted at all.
+        """
+        if abs(self._cfo) < 0.05:
+            return frame
+        from scipy.signal import hilbert
+        t = np.arange(len(frame)) / self.geo.sample_rate
+        return np.real(hilbert(frame) * np.exp(-2j * np.pi * self._cfo * t))
+
     def _demod(self, frame: np.ndarray, peak: float) -> OfdmResult:
         geo = self.geo
         self.stats.frames_seen += 1
+        frame = self._derotate(frame)
         sym = frame.reshape(geo.frame_symbols, geo.symbol_samples)
         bins = slice(geo.bin_lo, geo.bin_hi + 1)
 
@@ -447,6 +490,7 @@ class Demodulator:
         self._chan = chan
 
         rx_mc = _from_time(sym[1], geo)[bins] / chan
+        from . import framing
         word = framing.encode_modcod(0)
         reps = len(rx_mc) // len(word)
         if reps >= 1:
@@ -468,13 +512,143 @@ class Demodulator:
         pilot_at = geo.pilot_bins - geo.bin_lo
         data_at = geo.data_bins - geo.bin_lo
         payload = np.empty((geo.symbols_per_frame, geo.data_carriers), complex)
+        common = np.empty(geo.symbols_per_frame)
         for i in range(geo.symbols_per_frame):
             eq = _from_time(sym[i + 2], geo)[bins] / chan
-            # Residual phase drift between preambles, from the pilots. A
-            # common rotation on all subcarriers is what a small timing or
+            # Residual phase drift since the preamble, from the pilots. A
+            # rotation common to every subcarrier is what a small timing or
             # frequency error looks like here.
             err = eq[pilot_at] * np.conj(_pilot_values(geo, i))
-            rot = np.exp(-1j * np.angle(np.sum(err)))
-            payload[i] = eq[data_at] * rot
+            # Fit phase against subcarrier, not just an average of it. A
+            # carrier offset rotates every subcarrier equally, but a sampling
+            # clock offset -- a different fault, and one a soundcard always
+            # has -- tilts the phase across frequency instead. Averaging sees
+            # the tilt as nothing at all and leaves the band edges rotated,
+            # which is where the errors then appear.
+            ph = np.unwrap(np.angle(err))
+            slope_f, intercept = np.polyfit(pilot_at, ph, 1)
+            common[i] = intercept
+            fix = np.exp(-1j * (slope_f * np.arange(geo.carriers) + intercept))
+            payload[i] = (eq * fix)[data_at]
         result.symbols = payload.ravel()
+
+        # That common phase advances linearly with symbol index when there is
+        # a frequency offset, so its slope measures the offset directly. Fed
+        # back for the next frame rather than applied to this one: the damage
+        # is interference done before the transform, and only a correction
+        # applied ahead of it can undo that.
+        slope = np.polyfit(np.arange(geo.symbols_per_frame),
+                           np.unwrap(common), 1)[0]
+        step = slope / (2 * np.pi * geo.symbol_duration)
+        # Damped, because a single frame's estimate carries the noise of one
+        # frame's pilots and an offset does not move quickly.
+        self._cfo += 0.5 * step
+        result.cfo_hz = self._cfo
         return result
+
+
+# --------------------------------------------------------------------------
+# Coded frames
+# --------------------------------------------------------------------------
+#
+# These two wrap the raw OFDM layer in the same FEC, signalling and framing
+# the single-carrier path uses, and present the same interface as
+# modulator.Modulator and demodulator.Demodulator. That is deliberate: the
+# apps then choose a class and change nothing else, and both modes share one
+# transport chain, one signalling format and one set of measured MODCOD
+# thresholds rather than growing a second of each.
+
+
+class CodedResult:
+    """Shaped like demodulator.FrameResult, so callers need not care which."""
+
+    __slots__ = ("header", "symbols", "payload", "modcod", "evm_db", "snr_db",
+                 "freq_offset_hz", "timing_ppm", "corr_peak", "modcod_margin")
+
+    def __init__(self, symbols):
+        self.header = None
+        self.symbols = symbols
+        self.payload = None
+        self.modcod = None
+        self.evm_db = 0.0
+        self.snr_db = 0.0
+        self.freq_offset_hz = 0.0
+        self.timing_ppm = 0.0
+        self.corr_peak = 0.0
+        self.modcod_margin = 0.0
+
+    @property
+    def locked(self) -> bool:
+        return self.header is not None
+
+
+class CodedModulator:
+    """Coded frames to real passband audio, for an OFDM profile."""
+
+    def __init__(self, profile, level_dbfs: float | None = None):
+        self.profile = profile
+        geo = profile.geometry
+        self.geo = geo
+        self._mod = Modulator(geo) if level_dbfs is None else Modulator(geo, level_dbfs)
+        # What went out on the subcarriers last frame, for the constellation
+        # display. The single-carrier path reads these back out of the frame
+        # by slot index; OFDM has no such slots, so it keeps them.
+        self.last_symbols = np.zeros(0, dtype=complex)
+
+    def modulate_frame(self, modcod, header, payload_bytes) -> np.ndarray:
+        from . import constellation, framing
+        bits = framing.channel_bits(self.profile, modcod, header, payload_bytes)
+        self.last_symbols = constellation.modulate(bits, modcod.bits_per_symbol)
+        return self._mod.frame(modcod.index, self.last_symbols)
+
+    def modulate_symbols(self, symbols: np.ndarray) -> np.ndarray:
+        raise NotImplementedError("OFDM frames are built from coded bits")
+
+    def flush(self) -> np.ndarray:
+        # Nothing to flush: OFDM symbols carry no filter tail between them,
+        # which is the same property the cyclic prefix exists to create.
+        return np.zeros(0)
+
+
+class CodedDemodulator:
+    """Real passband audio to decoded frames, for an OFDM profile."""
+
+    def __init__(self, profile):
+        self.profile = profile
+        self.geo = profile.geometry
+        self._dem = Demodulator(self.geo)
+        self.stats = self._dem.stats
+
+    def feed(self, samples: np.ndarray) -> None:
+        self._dem.feed(samples)
+
+    def frames(self) -> list[CodedResult]:
+        from . import constellation, framing
+        from .profiles import MODCOD_BY_INDEX
+        out = []
+        for r in self._dem.frames():
+            res = CodedResult(r.symbols)
+            res.corr_peak = r.corr_peak
+            res.modcod_margin = r.modcod_margin
+            # Timing is reported in ppm for the same reason as the
+            # single-carrier path: it is the sampling clock difference, and a
+            # sample or two per frame is meaningful only against the frame.
+            res.timing_ppm = (r.timing_offset / self.geo.frame_samples) * 1e6
+            if not r.locked:
+                out.append(res)
+                continue
+            modcod = MODCOD_BY_INDEX.get(r.modcod_index)
+            if modcod is None:
+                out.append(res)
+                continue
+            res.modcod = modcod
+            res.evm_db = constellation.evm_db(r.symbols, modcod.bits_per_symbol)
+            res.snr_db = res.evm_db
+            noise_var = 10.0 ** (-res.evm_db / 10.0)
+            hdr, payload = framing.decode_payload(
+                self.profile, modcod, r.symbols, max(noise_var, 1e-4))
+            if hdr is not None:
+                res.header = hdr
+                res.payload = payload
+            out.append(res)
+        return out

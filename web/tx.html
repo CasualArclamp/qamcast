@@ -184,6 +184,7 @@
       <tr><td>Frame</td><td id="pFrame">-</td></tr>
       <tr><td>Interleaver</td><td id="pIl">-</td></tr>
     </table>
+    <div class="note" id="ofdmNote">&nbsp;</div>
     <div class="note" id="pWarn">&nbsp;</div>
   </div>
 
@@ -366,7 +367,21 @@ async function resolve(driver) {
     });
     if (r.error) { set('pWarn', r.error); return; }
 
-    fill($('symbolRate'), r.symbol_rates.map(v => ({value: v, text: v + ' Bd'})), r.symbol_rate);
+    // OFDM has no symbol rate to choose and no roll-off: the geometry is
+    // fixed by the profile, and the only thing left to set is the MODCOD. The
+    // controls go read-only rather than vanishing, so the numbers they hold
+    // are still there to read.
+    const isOfdm = r.mode === 'ofdm';
+    $('symbolRate').disabled = isOfdm;
+    $('rolloff').disabled = isOfdm || $('preset').value !== 'CUSTOM';
+    $('sampleRate').disabled = isOfdm || $('preset').value !== 'CUSTOM';
+    document.querySelectorAll('button.lock').forEach(b => {
+      b.style.display = isOfdm && b.dataset.lock !== 'modcod' ? 'none' : '';
+    });
+    set('ofdmNote', isOfdm ? r.ofdm.describe : ' ');
+    fill($('symbolRate'), isOfdm
+         ? [{value: r.symbol_rate, text: r.symbol_rate + ' sym/s'}]
+         : r.symbol_rates.map(v => ({value: v, text: v + ' Bd'})), r.symbol_rate);
     fill($('modulation'), [...new Set(META.modcods.map(m => m.modulation))]
          .map(m => ({value: m, text: m})), r.modulation);
     fill($('codeRate'), [...new Set(META.modcods.map(m => m.code_rate))]

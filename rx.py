@@ -26,7 +26,7 @@ import wave
 
 import numpy as np
 
-from qamcore import (codec, demodulator, framing, profiles, scope,
+from qamcore import (codec, demodulator, framing, ofdm, profiles, scope,
                      transport, webui)
 
 # Before anything is decoded the constellation is unknown, so start at the
@@ -188,7 +188,8 @@ class Receiver:
         src = player = dec = None
         try:
             src = open_input(device, profile.sample_rate)
-            dem = demodulator.Demodulator(profile)
+            dem = (ofdm.CodedDemodulator(profile) if profile.is_ofdm
+                   else demodulator.Demodulator(profile))
             player = open_player(outdev, codec.SAMPLE_RATE, record)
             # Carry the listener's settings across a restart rather than
             # springing full volume on them when the device reopens.
@@ -325,8 +326,10 @@ class Receiver:
         state = {
             "running": True,
             "profile": profile.name,
-            "footprint": f"{profile.symbol_rate} Bd \u00b7 "
-                         f"{lo/1000:.1f}-{hi/1000:.1f} kHz",
+            "footprint": (f"OFDM {profile.geometry.carriers} carriers"
+                          if profile.is_ofdm
+                          else f"{profile.symbol_rate} Bd")
+                         + f" · {lo/1000:.1f}-{hi/1000:.1f} kHz",
             "locked": locked,
             "corr": r.corr_peak if r else None,
             "modcod": str(modcod) if modcod else None,

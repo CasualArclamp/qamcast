@@ -218,6 +218,16 @@ class Profile:
     pilot_spacing: int        # one pilot every N symbols in the payload region
     description: str
 
+    # OFDM profiles. The geometry is carried as plain numbers rather than an
+    # OfdmGeometry so this module need not import ofdm, which imports framing,
+    # which imports this one. Built on demand by `geometry` below.
+    mode: str = "sc"          # "sc" single carrier, or "ofdm"
+    ofdm_fft: int = 0
+    ofdm_cp: int = 0
+    ofdm_bin_lo: int = 0
+    ofdm_bin_hi: int = 0
+    ofdm_symbols: int = 0     # data symbols per frame
+
     # ---- geometry -------------------------------------------------------
 
     @property
@@ -232,19 +242,42 @@ class Profile:
         return q
 
     @property
+    def is_ofdm(self) -> bool:
+        return self.mode == "ofdm"
+
+    @property
+    def geometry(self):
+        """The OFDM geometry this profile describes. OFDM profiles only."""
+        if not self.is_ofdm:
+            raise ValueError(f"profile {self.name} is not an OFDM profile")
+        from .ofdm import OfdmGeometry
+        return OfdmGeometry(
+            sample_rate=self.sample_rate, fft=self.ofdm_fft, cp=self.ofdm_cp,
+            bin_lo=self.ofdm_bin_lo, bin_hi=self.ofdm_bin_hi,
+            symbols_per_frame=self.ofdm_symbols,
+        )
+
+    @property
     def bandwidth(self) -> float:
-        """Occupied bandwidth of the RRC-shaped signal, Hz."""
+        """Occupied bandwidth, Hz."""
+        if self.is_ofdm:
+            return self.geometry.bandwidth
         return self.symbol_rate * (1.0 + self.rolloff)
 
     @property
     def band(self) -> tuple[float, float]:
         """(low, high) edges of the occupied band, Hz."""
+        if self.is_ofdm:
+            # Exact for OFDM: these bins are driven and no others.
+            return self.geometry.band
         half = self.bandwidth / 2.0
         return (self.carrier - half, self.carrier + half)
 
     @property
     def frame_duration(self) -> float:
         """Seconds per frame -- also the worst-case acquisition granularity."""
+        if self.is_ofdm:
+            return self.geometry.frame_duration
         return self.frame_symbols / self.symbol_rate
 
     # ---- frame layout ---------------------------------------------------
@@ -270,7 +303,14 @@ class Profile:
 
     @property
     def data_symbols(self) -> int:
-        """Symbols per frame that actually carry payload."""
+        """Symbols per frame that actually carry payload.
+
+        The one number capacity() needs, and the reason an OFDM profile needs
+        no special case anywhere downstream: the FEC, the interleaver and the
+        transport chain all size themselves off this.
+        """
+        if self.is_ofdm:
+            return self.geometry.payload_symbols
         return self.pilot_groups * (self.pilot_spacing - 1)
 
     @property
@@ -503,6 +543,52 @@ PROFILES.update({
 
 # Aliases. WIDE predates the others and is the 96 kHz one; spelling it WIDE96
 # is clearer once there are three of them, so both names work.
+# --------------------------------------------------------------------------
+# OFDM profiles
+# --------------------------------------------------------------------------
+#
+# Same bands as their single-carrier namesakes, so a link can be moved between
+# the two without re-planning the spectrum. What changes is what happens inside
+# that band: instead of one carrier equalised by inverting the channel, a few
+# hundred narrow ones with a cyclic prefix that removes the echo outright.
+#
+# The trade, measured on WIDE48 with a -6 dB echo at 30 dB SNR: OFDM gives up
+# about 12% of the payload symbol rate to the prefix and the pilots, and in
+# exchange it still decodes at 1.6 ms of delay spread where the single-carrier
+# equaliser cannot lock past 0.6 ms.
+#
+# Bin counts are computed rather than written down, so a band edge can never
+# disagree with the geometry that serves it.
+
+def _ofdm(name: str, base: str, fft: int, cp_fraction: int, symbols: int,
+          description: str) -> Profile:
+    src = PROFILES[base]
+    spacing = src.sample_rate / fft
+    lo, hi = src.band
+    bin_lo = max(1, int(-(-lo // spacing)))
+    bin_hi = min(fft // 2 - 1, int(hi // spacing) - 1)
+    return Profile(
+        name=name, sample_rate=src.sample_rate, symbol_rate=src.symbol_rate,
+        rolloff=src.rolloff, carrier=src.carrier,
+        frame_symbols=src.frame_symbols, pilot_spacing=src.pilot_spacing,
+        description=description, mode="ofdm", ofdm_fft=fft,
+        ofdm_cp=fft // cp_fraction, ofdm_bin_lo=bin_lo, ofdm_bin_hi=bin_hi,
+        ofdm_symbols=symbols,
+    )
+
+
+PROFILES.update({
+    "OFDM96": _ofdm("OFDM96", "WIDE", 1024, 8, 18,
+                    "96 kHz card, OFDM, widest footprint"),
+    "OFDM48": _ofdm("OFDM48", "WIDE48", 512, 8, 18,
+                    "48 kHz card, OFDM, full audio band"),
+    "OFDM44": _ofdm("OFDM44", "WIDE44", 512, 8, 18,
+                    "44.1 kHz card, OFDM, full audio band"),
+    "OFDMRADIO": _ofdm("OFDMRADIO", "RADIO", 512, 4, 18,
+                       "48 kHz card, OFDM, fits a 15 kHz transmitter stage, "
+                       "long prefix for multipath"),
+})
+
 ALIASES = {"WIDE96": "WIDE", "STANDARD": "WIDE48"}
 
 for _p in PROFILES.values():

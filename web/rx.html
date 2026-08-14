@@ -111,6 +111,7 @@
       <tr><td>Samples/symbol</td><td id="pSps">-</td></tr>
       <tr><td>Frame</td><td id="pFrame">-</td></tr>
     </table>
+    <div class="note" id="ofdmNote">&nbsp;</div>
     <div class="note" id="pWarn">&nbsp;</div>
   </div>
 
@@ -181,13 +182,18 @@ function fill(sel, items, value) {
 async function resolve() {
   if (!META) return;
   const r = await control({
-    cmd: 'solve', driver: 'symbol_rate',
+    cmd: 'solve', driver: 'symbol_rate', profile: $('preset').value,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,
     rolloff: +$('rolloff').value,
     modulation: 'QPSK', code_rate: '1/2', bitrate: 0,
   });
   if (r.error) { set('pWarn', r.error); return; }
+  const isOfdm = r.mode === 'ofdm';
+  $('symbolRate').disabled = isOfdm;
+  $('rolloff').disabled = isOfdm || $('preset').value !== 'CUSTOM';
+  $('sampleRate').disabled = isOfdm || $('preset').value !== 'CUSTOM';
+  set('ofdmNote', isOfdm ? r.ofdm.describe : ' ');
   set('pBand', `${(r.band[0]/1000).toFixed(1)} - ${(r.band[1]/1000).toFixed(1)} kHz`);
   set('pSps', r.sps);
   set('pFrame', r.frame_symbols + ' sym, ' + r.frame_ms + ' ms');

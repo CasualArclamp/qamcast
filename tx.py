@@ -26,8 +26,8 @@ import wave
 
 import numpy as np
 
-from qamcore import (channel as CH, codec, framing, icy, modulator, profiles,
-                     scope, streams, transport, webui)
+from qamcore import (channel as CH, codec, framing, icy, modulator, ofdm,
+                     profiles, scope, streams, transport, webui)
 
 # Config and PAD are retransmitted this often. They cannot be sent once: a
 # receiver joining mid-broadcast has missed anything at the start, and so has
@@ -338,7 +338,12 @@ class Transmitter:
             sink = open_output(device, profile.sample_rate)
 
             tx = transport.TransmitChain(profile, modcod)
-            mod = modulator.Modulator(profile)
+            # One line decides the physical layer. Everything after it --
+            # the transport chain, the FEC, the framing, the scope, the drive
+            # -- is identical, which is the point of giving the OFDM path the
+            # same interface as the single-carrier one.
+            mod = (ofdm.CodedModulator(profile) if profile.is_ofdm
+                   else modulator.Modulator(profile))
             cap = profile.capacity(modcod)
             chan = CH.Channel(profile, self._chan_cfg)
             chan_key = self._chan_cfg.summary()
@@ -396,11 +401,17 @@ class Transmitter:
                 payload, il, rsp = tx.next_frame()
                 hdr = framing.Header(modcod.index, enc.choice.codec_id, il, rsp,
                                      frames % framing.FRAME_COUNT_MOD)
-                # Build symbols explicitly rather than going straight to
-                # audio: the constellation display needs them, and rebuilding
-                # them afterwards would mean modulating the frame twice.
-                symbols = framing.build_frame(profile, modcod, hdr, payload)
-                samples = mod.modulate_symbols(symbols)
+                # Single carrier builds symbols explicitly rather than going
+                # straight to audio: the constellation display needs them, and
+                # rebuilding them afterwards would modulate the frame twice.
+                # OFDM has no such symbol vector -- its frame is subcarriers,
+                # not a line of symbols -- so it goes straight to audio and
+                # keeps the payload symbols for the display itself.
+                if profile.is_ofdm:
+                    samples = mod.modulate_frame(modcod, hdr, payload)
+                else:
+                    symbols = framing.build_frame(profile, modcod, hdr, payload)
+                    samples = mod.modulate_symbols(symbols)
 
                 with self._lock:
                     if self._chan_cfg.summary() != chan_key:
@@ -421,7 +432,9 @@ class Transmitter:
                 # Into the scope before the blocking write, so the waterfall
                 # is never waiting on the sound card.
                 feed.push_audio(out)
-                feed.push_symbols(symbols[framing.data_slots(profile)][::max(
+                shown = (mod.last_symbols if profile.is_ofdm
+                         else symbols[framing.data_slots(profile)])
+                feed.push_symbols(shown[::max(
                     1, profile.data_symbols // scope_symbols)])
                 sink.write(out)
 
@@ -666,6 +679,61 @@ def _tightest_modcod(sample_rate: int, symbol_rate: int, bitrate: int,
     return None
 
 
+def _solve_ofdm(profile: profiles.Profile, msg: dict) -> dict:
+    """What the UI shows for an OFDM profile."""
+    geo = profile.geometry
+    try:
+        modcod = pick_modcod(msg, profile, 0)
+    except (KeyError, ValueError) as exc:
+        return {"error": f"bad settings: {exc}"}
+    cap = profile.capacity(modcod)
+    ceiling = max(0.0, cap.net_bitrate - profiles.PAD_RESERVE_BPS)
+    bitrate = int(msg.get("bitrate") or 64000)
+    moved = []
+    if bitrate > ceiling:
+        bitrate = int(ceiling // 1000) * 1000
+        moved.append("bitrate")
+    lo, hi = geo.band
+    return {
+        "mode": "ofdm",
+        "sample_rate": profile.sample_rate,
+        "symbol_rate": int(round(geo.symbol_rate)),
+        "symbol_rates": [int(round(geo.symbol_rate))],
+        "sps": geo.fft,
+        "rolloff": profile.rolloff,
+        "carrier": (lo + hi) / 2,
+        "band": [round(lo), round(hi)],
+        "bandwidth": round(geo.bandwidth),
+        "nyquist": profile.sample_rate / 2,
+        "fits": hi < profile.sample_rate / 2,
+        "frame_symbols": geo.frame_symbols,
+        "frame_ms": round(geo.frame_duration * 1000),
+        "pilot_spacing": profile.pilot_spacing,
+        "modcod": modcod.index,
+        "modcod_name": str(modcod),
+        "modulation": modcod.modulation,
+        "code_rate": f"{modcod.conv_num}/{modcod.conv_den}",
+        "rs": f"{profiles.RS_N},{modcod.rs_k}",
+        "required_evm_db": modcod.required_evm_db,
+        "net_bitrate": round(cap.net_bitrate),
+        "max_audio_bitrate": round(ceiling),
+        "interleaver_seconds": round(profiles.interleaver_delay(profile, modcod), 1),
+        "bitrate": max(0, bitrate),
+        "carries": bitrate <= ceiling,
+        "locks": [], "moved": moved, "notes": [],
+        "conflict": "" if bitrate <= ceiling else
+                    f"{bitrate/1000:.0f} kbps is more than this profile carries "
+                    f"at {modcod}; the geometry is fixed, so lower the bitrate "
+                    f"or raise the MODCOD.",
+        "ofdm": {
+            "fft": geo.fft, "cp": geo.cp, "carriers": geo.carriers,
+            "spacing": round(geo.bin_spacing, 1),
+            "delay_spread_ms": round(geo.max_delay_spread * 1000, 2),
+            "describe": geo.describe(),
+        },
+    }
+
+
 def solve(msg: dict) -> dict:
     """Make the three linked fields agree, moving only what is not locked.
 
@@ -675,6 +743,19 @@ def solve(msg: dict) -> dict:
     the mismatch is reported rather than papered over by quietly overriding a
     lock -- a lock that gives way without saying so is worse than no lock.
     """
+    # An OFDM profile is not a symbol rate and a roll-off, so none of the
+    # solving below applies to it: the geometry is fixed by the profile and
+    # the only free choice left is the MODCOD. Report it from the geometry
+    # rather than describing it as a shaped single carrier, which would put
+    # the wrong band and the wrong capacity on the page.
+    name = str(msg.get("profile") or "").upper()
+    try:
+        preset_for_mode = profiles.get_profile(name) if name and name != "CUSTOM" else None
+    except (KeyError, ValueError):
+        preset_for_mode = None
+    if preset_for_mode is not None and preset_for_mode.is_ofdm:
+        return _solve_ofdm(preset_for_mode, msg)
+
     try:
         sample_rate = int(msg.get("sample_rate") or 48000)
         rolloff = float(msg.get("rolloff") or 0.25)

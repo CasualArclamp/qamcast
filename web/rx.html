@@ -12,7 +12,37 @@
   <span id="conn">connecting</span> &middot; <span id="footprint">-</span>
 </div>
 
+<div class="actions">
+  <span id="lock" class="pill">no signal</span>
+  <span class="stat">MODCOD <b id="modcod">-</b></span>
+  <span class="stat">EVM <b id="evm">-</b></span>
+  <span class="stat">audio <b id="audiorate">-</b></span>
+  <span class="spacer"></span>
+  <span class="stat">vol <b id="volPct">100%</b></span>
+  <input type="range" id="volume" min="0" max="100" value="100" step="1"
+         style="width:110px">
+  <button id="pause">Pause</button>
+  <button id="start" class="go">Listen</button>
+  <button id="stop" class="stop">Stop</button>
+</div>
+<div class="err" id="error"></div>
+
 <div class="grid">
+
+  <div class="panel">
+    <h2>Now playing</h2>
+    <table>
+      <tr><td>Station</td><td id="pstation">-</td></tr>
+      <tr><td>Title</td><td id="ptitle">-</td></tr>
+      <tr><td>Artist</td><td id="partist">-</td></tr>
+    </table>
+    <div class="note">
+      Programme-associated data, as received. Volume and pause above are
+      monitoring only &mdash; a recording keeps the audio as recovered, and
+      pause mutes and stays live rather than holding your place, since the
+      broadcast carries on regardless.
+    </div>
+  </div>
 
   <div class="panel">
     <h2>Link</h2>
@@ -53,64 +83,39 @@
     <label>Audio output</label>
     <select id="outdev"></select>
     <label style="display:inline"><input type="checkbox" id="allApis" style="width:auto"> show every host API</label>
-    <div class="row">
-      <button id="start" class="go">Listen</button>
-      <button id="stop" class="stop">Stop</button>
-    </div>
-    <div class="err" id="error"></div>
-
-    <label class="lockable">Volume
-      <span class="dim" id="volPct">100%</span>
-    </label>
-    <div class="row">
-      <input type="range" id="volume" min="0" max="100" value="100" step="1">
-      <button id="pause" style="flex:0 0 6.5em;margin:0">Pause</button>
-    </div>
-    <div class="note">
-      Monitoring only &mdash; a recording keeps the audio as recovered. Pause
-      mutes and stays live: the broadcast carries on regardless, so holding
-      your place would only put you further behind every second.
-    </div>
-
     <div class="note">
       Do not pick the same virtual cable for playback that you are listening
       on, or the decoded audio goes straight back into the modem's input.
     </div>
   </div>
 
+  <!-- Split in two: what the radio is doing, and what the decoder is doing.
+       One sixteen-row table made every reading equally hard to find. -->
   <div class="panel">
-    <h2>Status</h2>
+    <h2>Signal</h2>
     <table>
-      <tr><td>Lock</td><td><span id="lock" class="pill">no signal</span></td></tr>
       <tr><td>Sync quality</td><td id="corr">-</td></tr>
-      <tr><td>MODCOD</td><td id="modcod">-</td></tr>
-      <tr><td>Codec</td><td id="codec">-</td></tr>
-      <tr><td>Audio bitrate</td><td id="audiorate">-</td></tr>
-      <tr><td>Coding tools</td><td id="codectools">-</td></tr>
-      <tr><td>EVM</td><td id="evm">-</td></tr>
       <tr><td>Carrier error</td><td id="freq">-</td></tr>
       <tr><td>Clock error</td><td id="ppm">-</td></tr>
       <tr><td>Frames</td><td id="frames">0</td></tr>
+      <tr><td>Re-acquisitions</td><td id="resyncs">-</td></tr>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Decoding</h2>
+    <table>
+      <tr><td>Codec</td><td id="codec">-</td></tr>
+      <tr><td>Coding tools</td><td id="codectools">-</td></tr>
       <tr><td>Header errors</td><td id="hdrerr">-</td></tr>
       <tr><td>RS corrected</td><td id="rscorr">-</td></tr>
       <tr><td>RS failed</td><td id="rsfail">-</td></tr>
-      <tr><td>Re-acquisitions</td><td id="resyncs">-</td></tr>
       <tr><td>Frames bridged</td><td id="bridged">-</td></tr>
       <tr><td>Audio buffered</td><td id="audiobuf">-</td></tr>
     </table>
     <label>Interleaver fill</label>
     <div class="bar"><i id="fillBar" style="width:0%"></i></div>
     <div class="note" id="fillNote">&nbsp;</div>
-  </div>
-
-  <div class="panel">
-    <h2>Now playing</h2>
-    <table>
-      <tr><td>Station</td><td id="pstation">-</td></tr>
-      <tr><td>Title</td><td id="ptitle">-</td></tr>
-      <tr><td>Artist</td><td id="partist">-</td></tr>
-    </table>
-    <div class="note">Programme-associated data, as received.</div>
   </div>
 
   <div class="panel">
@@ -128,7 +133,7 @@
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel wide">
     <h2>Received spectrum</h2>
     <canvas id="spectrum"></canvas>
     <canvas id="waterfall"></canvas>

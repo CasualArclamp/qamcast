@@ -13,6 +13,20 @@
   <span id="footprint">-</span>
 </div>
 
+<!-- The one control that matters, above everything and always in the same
+     place, with the two numbers you check while it runs. It used to sit at
+     the bottom of a panel that had grown to hold four unrelated jobs. -->
+<div class="actions">
+  <span id="state" class="pill">idle</span>
+  <span class="stat">MODCOD <b id="modcod">-</b></span>
+  <span class="stat">audio <b id="audiorate">-</b></span>
+  <span class="stat">spare <b id="spare">-</b></span>
+  <span class="spacer"></span>
+  <button id="start" class="go">Start</button>
+  <button id="stop" class="stop">Stop</button>
+</div>
+<div class="err" id="error"></div>
+
 <div class="grid">
 
   <div class="panel">
@@ -40,10 +54,12 @@
       <button id="usePassthrough" style="display:none">Match the stream</button>
     </div>
     <div class="note" id="probeNote">&nbsp;</div>
+  </div>
 
+  <div class="panel">
+    <h2>Encoding</h2>
     <label style="display:inline"><input type="checkbox" id="passthrough" style="width:auto">
       pass through &mdash; send the stream's own packets, no re-encode</label>
-
     <label>Codec</label>
     <select id="codec">
       <option value="opus">Opus &mdash; one codec, 16-192k, has concealment</option>
@@ -51,14 +67,10 @@
     </select>
     <div class="ladder" id="codecLadder"></div>
     <div class="note" id="codecWhy">&nbsp;</div>
+
     <label>Output device</label>
     <select id="device"></select>
     <label style="display:inline"><input type="checkbox" id="allApis" style="width:auto"> show every host API</label>
-    <div class="row">
-      <button id="start" class="go">Start</button>
-      <button id="stop" class="stop">Stop</button>
-    </div>
-    <div class="err" id="error"></div>
   </div>
 
   <div class="panel">
@@ -130,13 +142,9 @@
   <div class="panel">
     <h2>On air</h2>
     <table>
-      <tr><td>State</td><td><span id="state" class="pill">idle</span></td></tr>
-      <tr><td>MODCOD</td><td id="modcod">-</td></tr>
       <tr><td>Channel rate</td><td id="netrate">-</td></tr>
-      <tr><td>Audio rate</td><td id="audiorate">-</td></tr>
       <tr><td>Codec</td><td id="liveCodec">-</td></tr>
       <tr><td>Coding tools</td><td id="liveTools">-</td></tr>
-      <tr><td>Spare</td><td id="spare">-</td></tr>
       <tr><td>Frames sent</td><td id="frames">0</td></tr>
       <tr><td>On air</td><td id="uptime">-</td></tr>
       <tr><td>Peak level</td><td id="peak">-</td></tr>
@@ -166,7 +174,7 @@
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel wide">
     <h2>Transmitted spectrum</h2>
     <canvas id="spectrum"></canvas>
     <canvas id="waterfall"></canvas>
@@ -179,24 +187,35 @@
     <div class="note">Transmitted symbols, before the channel.</div>
   </div>
 
-  <div class="panel">
-    <h2>Channel simulator</h2>
-    <div class="note" style="margin:0 0 8px">
-      Impairments are applied to the transmitted audio, so the receiver under
-      test stays unmodified. Leave off for a real link.
+  <!-- A test aid, not an operating control, so it stays folded away until
+       it is wanted rather than sitting among the things that go on air. -->
+  <details class="panel span-all">
+    <summary>Channel simulator &mdash; impairments for testing</summary>
+    <div class="note" style="margin:8px 0">
+      Applied to the transmitted audio, so the receiver under test stays
+      unmodified. Leave off for a real link.
     </div>
-    <label>Preset</label>
-    <select id="chanPreset">
-      <option value="clean">clean &mdash; off</option>
-      <option value="noisy">noisy &mdash; 25 dB, drift</option>
-      <option value="radio">radio &mdash; echo, jitter</option>
-      <option value="acoustic">acoustic &mdash; room, Doppler</option>
-      <option value="reverb">reverb &mdash; known to fail</option>
-    </select>
-    <label>SNR override, dB &mdash; blank uses the preset</label>
-    <input id="snr" placeholder="">
-    <button id="applyChan">Apply</button>
-  </div>
+    <div class="row">
+      <div>
+        <label>Preset</label>
+        <select id="chanPreset">
+          <option value="clean">clean &mdash; off</option>
+          <option value="noisy">noisy &mdash; 25 dB, drift</option>
+          <option value="radio">radio &mdash; echo, jitter</option>
+          <option value="acoustic">acoustic &mdash; narrow, Doppler</option>
+          <option value="reverb">reverb &mdash; known to fail</option>
+        </select>
+      </div>
+      <div>
+        <label>SNR override, dB &mdash; blank uses the preset</label>
+        <input id="snr" placeholder="">
+      </div>
+      <div style="flex:0 0 auto">
+        <label>&nbsp;</label>
+        <button id="applyChan" style="margin:0">Apply</button>
+      </div>
+    </div>
+  </details>
 
 </div>
 

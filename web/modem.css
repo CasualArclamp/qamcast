@@ -32,6 +32,30 @@ h1 span { color: var(--dim); font-weight: 400; }
 
 .sub { color: var(--dim); margin-bottom: 14px; font-size: 12px; }
 
+/* Start/Stop and the two or three numbers you watch while it runs. Pinned
+   above the grid so they keep one position no matter how the panels reflow,
+   which the panels themselves cannot promise -- auto-fit reorders them at
+   every width. */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+}
+.actions .spacer { flex: 1 1 auto; }
+.actions button { width: auto; margin: 0; padding: 5px 20px; }
+.actions .stat { color: var(--dim); font-size: 12px; white-space: nowrap; }
+.actions .stat b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -45,6 +69,26 @@ h1 span { color: var(--dim); font-weight: 400; }
   border-radius: 6px;
   padding: 12px;
 }
+
+/* A spectrum is worth twice the width of a form field; a full-width strip
+   suits something that is only occasionally unfolded. Both are guarded by a
+   width query, because spanning two columns in a one-column grid overflows. */
+@media (min-width: 1000px) {
+  .panel.wide { grid-column: span 2; }
+  .panel.span-all { grid-column: 1 / -1; }
+}
+
+details.panel > summary {
+  cursor: pointer;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--dim);
+  font-weight: 600;
+  list-style-position: outside;
+}
+details.panel > summary:hover { color: var(--text); }
+details.panel[open] > summary { margin-bottom: 4px; }
 
 .panel h2 {
   font-size: 11px;

@@ -74,6 +74,8 @@ class Transmitter:
         self._meta_swap = False
         self._nowplaying: dict | None = None
         self._source = ""
+        self._drive_db = 0.0
+        self._drive = 1.0
         self.error: str | None = None
 
     # -- control ---------------------------------------------------------
@@ -248,6 +250,28 @@ class Transmitter:
             return {"error": f"{type(exc).__name__}: {exc}"}
         return np.as_dict()
 
+    # Range on the drive. Down is for a transmitter input that clips before
+    # full scale; up is bounded because the modulator already leaves 10 dB of
+    # headroom for the peak-to-average ratio, and spending all of it is how
+    # 256QAM gets folded across the constellation at once.
+    DRIVE_MIN_DB = -30.0
+    DRIVE_MAX_DB = 10.0
+
+    def set_drive(self, cfg: dict) -> dict:
+        """Output level, in dB relative to the modulator's own -15 dBFS."""
+        if "drive_db" in cfg:
+            try:
+                db = float(cfg["drive_db"])
+            except (TypeError, ValueError):
+                return {"error": f"bad drive {cfg['drive_db']!r}"}
+            db = min(self.DRIVE_MAX_DB, max(self.DRIVE_MIN_DB, db))
+            with self._lock:
+                self._drive_db = db
+                self._drive = 10.0 ** (db / 20.0)
+        return {"ok": True, "drive_db": self._drive_db,
+                "rms_dbfs": modulator.DEFAULT_LEVEL_DBFS + self._drive_db,
+                "min_db": self.DRIVE_MIN_DB, "max_db": self.DRIVE_MAX_DB}
+
     def set_channel(self, cfg: dict) -> dict:
         base = CH.PRESETS.get(cfg.get("preset", "clean"), CH.PRESETS["clean"])
         snr = str(cfg.get("snr", "")).strip()
@@ -275,6 +299,8 @@ class Transmitter:
             return self.nowplaying(msg)
         if cmd == "channel":
             return self.set_channel(msg)
+        if cmd == "drive":
+            return self.set_drive(msg)
         if cmd == "profiles":
             return {"profiles": webui.profile_list(),
                     "modcods": webui.modcod_list(),
@@ -382,6 +408,16 @@ class Transmitter:
                         chan_key = self._chan_cfg.summary()
                 out = chan.process(samples)
 
+                # Drive is the last thing applied, so it sets what leaves the
+                # card without touching the modulation or the simulator's SNR
+                # -- both of those are ratios, and scaling afterwards leaves
+                # them alone. Read under the lock so the slider can move it
+                # while transmitting.
+                with self._lock:
+                    drive = self._drive
+                if drive != 1.0:
+                    out = out * drive
+
                 # Into the scope before the blocking write, so the waterfall
                 # is never waiting on the sound card.
                 feed.push_audio(out)
@@ -458,6 +494,7 @@ class Transmitter:
             "frames": live.get("frames", 0),
             "uptime": time.time() - meta["started"],
             "peak_dbfs": 20 * np.log10(peak) if peak > 0 else -99.0,
+            "drive_db": self._drive_db,
             "clipping": live.get("clipping", 0.0),
             "backlog_frac": min(1.0, pending / MAX_PENDING),
             "backlog_note": _backlog_note(pending, live.get("dropped", 0),

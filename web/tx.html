@@ -54,6 +54,24 @@
       <div><span>Clipping</span><b id="clip">-</b></div>
     </div>
     <div class="note" id="bandnote">&nbsp;</div>
+
+    <label class="lockable">Drive
+      <span class="dim" id="driveVal">0.0 dB</span>
+    </label>
+    <div class="row">
+      <input type="range" id="drive" min="-30" max="10" value="0" step="0.5">
+      <button id="driveReset" style="flex:0 0 5em;margin:0">0 dB</button>
+    </div>
+    <div class="note why">
+      Output level into the card, relative to the modulator's &minus;15 dBFS
+      RMS. Set it by the peak reading above: the waveform has a 10 dB
+      peak-to-average ratio, so peaks want to sit near &minus;5 dBFS with the
+      clipping counter at zero. Clipping is worse than noise here &mdash; it
+      folds energy across the whole constellation at once, and 256QAM has no
+      margin to absorb it. Applied after the channel simulator, so it changes
+      the level and not the signal.
+    </div>
+
     <label>Encoder backlog</label>
     <div class="bar"><i id="backlogBar" style="width:0%"></i></div>
     <div class="note" id="backlogNote">&nbsp;</div>
@@ -725,6 +743,9 @@ connect(s => {
         : s.peak_dbfs > -6 || s.peak_dbfs < -24 ? 'warn' : 'good');
     grade('clip', s.clipping ? 'bad' : 'good');
     grade('audiorate', s.spare != null && s.spare < 1200 ? 'bad' : '');
+    // The transmitter owns the drive setting -- another tab may have moved it.
+    if (s.drive_db != null && document.activeElement !== $('drive')
+        && +$('drive').value !== s.drive_db) showDrive(s.drive_db);
   } else {
     ['spare', 'peak', 'clip', 'audiorate'].forEach(id => grade(id, ''));
   }
@@ -770,6 +791,19 @@ $('start').onclick = async () => {
 $('stop').onclick = () => control({cmd:'stop'});
 $('sendPad').onclick = () => control({cmd:'pad',
   station: $('padStation').value, title: $('title').value, artist: $('artist').value});
+// Sent to the server, not applied here: the level is applied to the samples
+// on their way to the card, and the page has no hand in that path.
+function showDrive(db) {
+  $('drive').value = db;
+  set('driveVal', (db > 0 ? '+' : '') + db.toFixed(1) + ' dB');
+}
+$('drive').oninput = () => {
+  const db = +$('drive').value;
+  showDrive(db);
+  control({cmd: 'drive', drive_db: db});
+};
+$('driveReset').onclick = () => { showDrive(0); control({cmd:'drive', drive_db: 0}); };
+
 $('applyChan').onclick = () => control({cmd:'channel',
   preset: $('chanPreset').value, snr: $('snr').value});
 

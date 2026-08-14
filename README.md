@@ -125,6 +125,13 @@ and `96000` both mean 96 kbps.
 Card rate, symbol rate and roll-off **must match at both ends**. Modulation,
 code rate and codec travel in the frame, so the receiver picks those up alone.
 
+**Drive** sets the output level into the card, relative to the modulator's
+−15 dBFS RMS, and can be moved while transmitting. Set it by the peak reading:
+the waveform has a 10 dB peak-to-average ratio, so peaks want to sit near
+−5 dBFS with the clipping counter at zero. Clipping is worse than noise here —
+it folds energy across the whole constellation at once, and 256QAM has no
+margin to absorb it.
+
 ## MODCOD ladder
 
 MODCOD sets the payload rate *inside* the footprint, and travels in the frame.

@@ -695,8 +695,25 @@ connect(s => {
   set('frames', s.frames ?? 0);
   set('uptime', s.uptime != null ? s.uptime.toFixed(0)+' s' : '-');
   set('peak', s.peak_dbfs != null ? s.peak_dbfs.toFixed(1)+' dBFS' : '-');
-  set('clip', s.clipping != null ? (s.clipping*100).toFixed(3)+' %' : '-',
-      s.clipping > 0 ? 'pill bad' : '');
+  set('clip', s.clipping != null ? (s.clipping*100).toFixed(3)+' %' : '-');
+
+  // Only meaningful once it is transmitting; before that they are placeholders
+  // and colouring them would be inventing a diagnosis.
+  if (s.running) {
+    // Spare is what the PAD, the codec config and the per-packet headers have
+    // to share. Below the reserve the encoder outruns the channel and the
+    // queue grows without bound, which is the failure this grading is for.
+    grade('spare', high(s.spare, 3000, 1200));
+    // Level: -12 dBFS is the aim. Loud enough to use the converter, far
+    // enough from full scale that a transmitter's own processing has room.
+    grade('peak', s.peak_dbfs == null ? ''
+        : s.peak_dbfs > -3 || s.peak_dbfs < -30 ? 'bad'
+        : s.peak_dbfs > -6 || s.peak_dbfs < -24 ? 'warn' : 'good');
+    grade('clip', s.clipping ? 'bad' : 'good');
+    grade('audiorate', s.spare != null && s.spare < 1200 ? 'bad' : '');
+  } else {
+    ['spare', 'peak', 'clip', 'audiorate'].forEach(id => grade(id, ''));
+  }
   // While running, the PAD boxes follow what the poller found, so the page
   // shows what is actually on air rather than what was typed before Start.
   if (s.running && $('autoMeta').checked) {

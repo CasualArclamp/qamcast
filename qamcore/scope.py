@@ -34,6 +34,10 @@ FFT_SIZE = 1024
 DEFAULT_BINS = 192
 FLOOR_DB = -90.0
 
+# Weight given to each new periodogram. Low enough to average away the
+# snapshot variance, high enough that the display still follows a real change.
+SPEC_SMOOTH = 0.25
+
 # How many pieces a frame's symbols are handed out in. Four matches a 20 Hz
 # publisher against frames of roughly a quarter second, so the cloud finishes
 # filling just as the next frame arrives.
@@ -59,6 +63,27 @@ def symbol_budget(bits_per_symbol: int) -> int:
     """
     want = DRAWS_PER_POINT * (1 << int(bits_per_symbol)) * SYMBOL_SLICES
     return int(min(SYMBOLS_MAX, max(SYMBOLS_MIN, want)))
+
+
+def bin_spectrum(mag: np.ndarray, bins: int) -> np.ndarray:
+    """Average ``mag`` into ``bins`` groups covering all of it.
+
+    The obvious `mag[:len(mag)//bins*bins].reshape(bins, -1)` silently drops
+    the remainder, and the remainder is not small: 512 FFT bins into 192
+    display bins keeps 384 and throws the top quarter of the spectrum away.
+    The axis then runs to 18 kHz while everything drawn against it -- the
+    occupied-band markers, the full canvas width -- still assumes 24, so a
+    signal reaching 20.1 kHz appears to run off the end and never come back
+    down.
+
+    Group edges from linspace instead, so every bin is accounted for whatever
+    the ratio happens to be.
+    """
+    if len(mag) <= bins:
+        return mag
+    edges = np.linspace(0, len(mag), bins + 1).astype(int)
+    sums = np.add.reduceat(mag, edges[:-1])
+    return sums / np.maximum(np.diff(edges), 1)
 
 
 def pack_int8(values: np.ndarray, scale: float) -> str:
@@ -94,6 +119,7 @@ class ScopeFeed:
         self._symbols: np.ndarray | None = None
         self._sym_pos = 0
         self._seq = 0
+        self._spec_avg: np.ndarray | None = None
         self._lock = threading.Lock()
         self._window = np.hanning(FFT_SIZE)
 
@@ -174,12 +200,20 @@ class ScopeFeed:
         out: dict = {"seq": seq}
         if seg is not None and np.any(seg):
             mag = np.abs(np.fft.rfft(seg * self._window)) ** 2
-            usable = mag[: FFT_SIZE // 2]
-            if len(usable) > self.bins:
-                usable = usable[: len(usable) // self.bins * self.bins]
-                usable = usable.reshape(self.bins, -1).mean(axis=1)
-            peak = usable.max() or 1.0
-            db = 10.0 * np.log10(np.maximum(usable / peak, 1e-12))
+            usable = bin_spectrum(mag[: FFT_SIZE // 2], self.bins)
+            # A single periodogram of a random data signal has an
+            # exponentially distributed power per bin -- about 5.6 dB of
+            # standard deviation -- so one snapshot is a jagged mess you
+            # cannot read a band edge off. Average in the power domain across
+            # snapshots; at 20 Hz this settles in a couple of hundred ms and
+            # still tracks a change fast enough to watch.
+            if self._spec_avg is None or len(self._spec_avg) != len(usable):
+                self._spec_avg = usable
+            else:
+                self._spec_avg = (1.0 - SPEC_SMOOTH) * self._spec_avg + SPEC_SMOOTH * usable
+            avg = self._spec_avg
+            peak = avg.max() or 1.0
+            db = 10.0 * np.log10(np.maximum(avg / peak, 1e-12))
             out["spec"] = pack_int8(np.maximum(db, FLOOR_DB), 1.0)
 
         if chunk is not None and len(chunk):

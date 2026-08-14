@@ -160,6 +160,32 @@ async function control(cmd) {
   return r.json();
 }
 
+// Colour a stat by how healthy it is. The thresholds live at the call sites,
+// because what counts as good is a property of the reading, not of the widget
+// -- and several of them are only meaningful relative to something else, like
+// Es/N0 against the MODCOD's own requirement.
+function grade(id, level) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = level || '';
+  if (el.parentElement && el.parentElement.parentElement
+      && el.parentElement.parentElement.classList.contains('stats')) {
+    el.parentElement.className = level || '';
+  }
+}
+
+// v at or above `good` is good, at or above `ok` is fair, below that is bad.
+function high(v, good, ok) {
+  if (v == null || !isFinite(v)) return '';
+  return v >= good ? 'good' : v >= ok ? 'warn' : 'bad';
+}
+// The same for readings where smaller is better; `v` may be signed.
+function low(v, good, ok) {
+  if (v == null || !isFinite(v)) return '';
+  const a = Math.abs(v);
+  return a <= good ? 'good' : a <= ok ? 'warn' : 'bad';
+}
+
 function set(id, text, cls) {
   const el = document.getElementById(id);
   if (!el) return;

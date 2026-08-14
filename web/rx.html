@@ -314,6 +314,31 @@ connect(s => {
       ? s.bridged + (s.chain_resyncs ? ` (+${s.chain_resyncs} realign)` : '')
       : '-');
   set('audiobuf', s.audio_buffer != null ? s.audio_buffer.toFixed(1)+' s' : '-');
+
+  // How healthy each reading is. Nothing is graded until there is a lock,
+  // because a number measured off noise is not a bad reading, it is no
+  // reading, and colouring it red would send you looking for a fault.
+  if (s.locked) {
+    // Es/N0 is graded against the MODCOD's own requirement rather than a
+    // fixed number: 13 dB is luxurious on QPSK 1/4 and hopeless on 256QAM.
+    // Two dB is the fade margin the auto-probe already insists on; six is
+    // where a rung starts to feel settled.
+    const margin = (s.evm != null && s.required_evm_db != null)
+        ? s.evm - s.required_evm_db : null;
+    grade('evm', high(margin, 6, 2));
+    $('evm').title = margin != null
+        ? `${margin.toFixed(1)} dB above the ${s.required_evm_db.toFixed(1)} dB `
+          + `this MODCOD needs` : '';
+    grade('corr', high(s.corr, 0.9, 0.7));
+    grade('freq', low(s.freq, 2, 10));           // residual after the AFC
+    grade('ppm', low(s.ppm, 20, 100));           // sound cards are ~±100 ppm
+    // Null when nothing is being played, in which case there is no buffer to
+    // report and `high` leaves it ungraded.
+    grade('audiobuf', high(s.audio_buffer, 0.3, 0.1));   // below 0.1 s it clicks
+  } else {
+    ['evm', 'corr', 'freq', 'ppm', 'audiobuf'].forEach(id => grade(id, ''));
+  }
+
   $('fillBar').style.width = Math.min(100,(s.fill ?? 0)*100)+'%';
   set('fillNote', s.fill_note || ' ');
   set('pstation', s.pad_station || '-');

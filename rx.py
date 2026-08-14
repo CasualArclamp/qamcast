@@ -280,7 +280,8 @@ class Receiver:
                 self._live = {
                     "chain": chain, "result": last_result, "modcod": modcod,
                     "codec_id": codec_id, "pad": pad, "frames": frames,
-                    "buffered": player.buffered, "audio_rate": meter.rate(),
+                    "buffered": player.buffered if player.monitors else None,
+                    "audio_rate": meter.rate(),
                 }
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
@@ -329,6 +330,9 @@ class Receiver:
             "locked": locked,
             "corr": r.corr_peak if r else None,
             "modcod": str(modcod) if modcod else None,
+            # What this rung needs, so the page can grade the measured figure
+            # against it rather than against a number picked for the display.
+            "required_evm_db": modcod.required_evm_db if modcod else None,
             "codec": framing.CODEC_NAMES.get(live.get("codec_id"))
                      if live.get("codec_id") is not None else None,
             # Measured off the packets that arrived, not read from the frame:
@@ -456,6 +460,10 @@ class Monitoring:
 
     volume = 1.0
     paused = False
+    # Whether this player actually feeds a device. A player that does not has
+    # no jitter buffer, and reporting its 0.0 as a buffer level makes an
+    # empty-sounding fault out of nothing at all.
+    monitors = False
 
     def set_volume(self, value: float) -> None:
         self.volume = min(1.0, max(0.0, float(value)))
@@ -498,6 +506,10 @@ class WavPlayer(Monitoring):
             self._also.write(pcm)
 
     @property
+    def monitors(self) -> bool:
+        return bool(self._also and self._also.monitors)
+
+    @property
     def buffered(self) -> float:
         return self._also.buffered if self._also else self._n / 4 / self._rate
 
@@ -522,6 +534,8 @@ class DevicePlayer(Monitoring):
     The modem delivers audio in frame-sized bursts, not smoothly, so writing
     straight to the device would underrun constantly.
     """
+
+    monitors = True
 
     def __init__(self, index: int | None, rate: int):
         import sounddevice as sd

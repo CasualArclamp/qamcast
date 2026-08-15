@@ -61,6 +61,11 @@ _BODY_CHARS = 16          # ceil(10 bytes * 8 / 5)
 
 MODE_SINGLE = 0
 MODE_OFDM = 1
+# Same fields as single carrier -- APSK changes only how the bits are laid out
+# on the constellation, not the footprint -- so it is a third mode value rather
+# than a different record.
+MODE_APSK = 2
+_SC_MODES = {MODE_SINGLE: "sc", MODE_APSK: "apsk"}
 
 
 class LinkKeyError(ValueError):
@@ -114,7 +119,8 @@ def _u16(value: float, what: str) -> tuple[int, int]:
 def encode(profile: profiles.Profile) -> str:
     """Pack a profile's physical layer into its key."""
     body = bytearray(_RECORD - 1)
-    body[0] = (VERSION << 4) | (MODE_OFDM if profile.is_ofdm else MODE_SINGLE)
+    body[0] = (VERSION << 4) | (MODE_OFDM if profile.is_ofdm else
+                                MODE_APSK if profile.is_apsk else MODE_SINGLE)
     body[2], body[3] = _u16(profile.sample_rate / 100.0, "sample rate")
 
     if profile.is_ofdm:
@@ -177,9 +183,9 @@ def decode(key: str) -> dict:
             "carriers": profiles.OFDM_CARRIER_CHOICES[idx],
             "cp_fraction": profiles.OFDM_CP_CHOICES[(flags >> 4) & 3],
         }
-    elif mode == MODE_SINGLE:
+    elif mode in _SC_MODES:
         info = {
-            "mode": "single",
+            "mode": _SC_MODES[mode],
             "sample_rate": sample_rate,
             "symbol_rate": a,
             "carrier": float(b),
@@ -212,7 +218,8 @@ def to_profile(info: dict, name: str = "") -> profiles.Profile:
             sample_rate=info["sample_rate"], symbol_rate=info["symbol_rate"],
             rolloff=info["rolloff"], carrier=info["carrier"],
             pilot_spacing=info["pilot_spacing"],
-            frame_symbols=info["frame_symbols"], name=label)
+            frame_symbols=info["frame_symbols"], name=label,
+            mode=info["mode"])
     except ValueError as exc:
         raise LinkKeyError(f"the key describes an impossible link: {exc}") from None
 
@@ -220,6 +227,8 @@ def to_profile(info: dict, name: str = "") -> profiles.Profile:
 def describe(info: dict) -> str:
     """One line an operator can check the key against before applying it."""
     parts = [f"{info['sample_rate'] / 1000:g} kHz card"]
+    if info["mode"] == "apsk":
+        parts.append("APSK")
     if info["carriers"]:
         lo, hi = info["band"]
         parts.append(f"OFDM {info['carriers']} carriers")

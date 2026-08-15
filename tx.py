@@ -348,6 +348,7 @@ class Transmitter:
                     "modcods": webui.modcod_list(),
                     "sample_rates": webui.sample_rates(),
                     "carrier_choices": list(profiles.OFDM_CARRIER_CHOICES),
+                    "default_profile": webui.default_profile(),
                     "symbol_rates": {str(r): webui.symbol_rates(r)
                                      for r in webui.sample_rates()}}
         if cmd == "solve":
@@ -643,6 +644,7 @@ def build_profile(cfg: dict) -> profiles.Profile:
         rolloff=float(cfg.get("rolloff") or 0.25),
         carrier=float(cfg["carrier"]) if cfg.get("carrier") else None,
         pilot_spacing=int(cfg.get("pilot_spacing") or 64),
+        mode="apsk" if str(cfg.get("mode") or "") == "apsk" else "sc",
     )
 
 
@@ -869,7 +871,13 @@ def solve(msg: dict) -> dict:
         # Pinned by a link key when one is in force; otherwise the preset's, or
         # the automatic choice.
         frame_symbols = int(msg["frame_symbols"]) if msg.get("frame_symbols") else None
+        # QAM or APSK. The preset settles it when there is one, because a
+        # preset *is* a mode; otherwise the page's own selector does.
+        sc_mode = str(msg.get("mode") or "sc")
+        if sc_mode not in ("sc", "apsk"):
+            sc_mode = "sc"
         if preset is not None:
+            sc_mode = preset.mode if preset.mode in ("sc", "apsk") else sc_mode
             pilot = pilot or preset.pilot_spacing
             # Only while the page still describes that preset -- once the
             # symbol rate is edited the hand-placed carrier no longer centres
@@ -1023,7 +1031,8 @@ def solve(msg: dict) -> dict:
     out["link_key"] = linkkey.encode(
         profiles.make_profile(sample_rate, symbol_rate, rolloff,
                               carrier=carrier, pilot_spacing=pilot,
-                              frame_symbols=frame_symbols))
+                              frame_symbols=frame_symbols, mode=sc_mode))
+    out["mode"] = sc_mode
     out["carries"] = bitrate <= ceiling
     out["locks"] = sorted(locks)
     out["moved"] = sorted(set(moved))
@@ -1177,7 +1186,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", help="stream URL or file")
-    ap.add_argument("--profile", default="WIDE",
+    ap.add_argument("--profile", default=profiles.DEFAULT_PROFILE,
                     help="preset name, or CUSTOM with --symbol-rate etc")
     ap.add_argument("--sample-rate", type=int, default=48000,
                     help="card rate, used with --profile CUSTOM")

@@ -104,6 +104,9 @@ class FrameResult:
     timing_ppm: float = 0.0
     corr_peak: float = 0.0
     modcod_margin: float = 0.0
+    # Per-ring correction applied on an APSK link, for the scope to show what
+    # the amplifier is doing. None on a QAM link, and on a clean APSK one.
+    ring_gains: np.ndarray | None = None
 
     @property
     def locked(self) -> bool:
@@ -489,8 +492,23 @@ class Demodulator:
             return result
 
         data = eq[slots]
+        family = self.profile.constellation_family
+        if family == constellation.APSK and modcod.bits_per_symbol > 2:
+            # Take the amplifier's per-ring gain and rotation back out. Only
+            # worth doing where there is more than one ring: at QPSK the
+            # constellation is already constant modulus and there is nothing
+            # for compression to distort differently between points.
+            fixed, gains = constellation.derings(data, modcod.bits_per_symbol)
+            if constellation.evm_db(fixed, modcod.bits_per_symbol, family) > \
+                    constellation.evm_db(data, modcod.bits_per_symbol, family):
+                data = fixed
+                eq = eq.copy()
+                eq[slots] = fixed
+                result.ring_gains = gains
+        result.symbols = data
         result.modcod = modcod
-        result.evm_db = constellation.evm_db(data, modcod.bits_per_symbol)
+        result.evm_db = constellation.evm_db(
+            data, modcod.bits_per_symbol, family)
         result.snr_db = result.evm_db
         noise_var = 10.0 ** (-result.evm_db / 10.0)
         hdr, payload = framing.parse_frame(p, modcod, eq, max(noise_var, 1e-4))

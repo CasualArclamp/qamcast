@@ -69,6 +69,8 @@ measured against, so it is not something a receiver can adapt to.
 
 | Profile | Fs | Symbol rate | α | Carrier | Occupied | Payload range |
 |---|---|---|---|---|---|---|
+| **`FM44`** | 44.1 kHz | 14700 Bd | 0.15 | 8.9 kHz | 0.4–17.3 kHz | 6.1 – 87.4 kbps |
+| `FM48` | 48 kHz | 16000 Bd | 0.15 | 9.7 kHz | 0.5–18.9 kHz | 6.6 – 95.1 kbps |
 | `WIDE` | 96 kHz | 32000 Bd | 0.20 | 23.0 kHz | 3.8–42.2 kHz | 13.6 – 195.2 kbps |
 | `WIDE48` | 48 kHz | 16000 Bd | 0.20 | 10.5 kHz | 0.9–20.1 kHz | 6.7 – 96.0 kbps |
 | `WIDE44` | 44.1 kHz | 14700 Bd | 0.20 | 10.0 kHz | 1.2–18.8 kHz | 6.2 – 88.2 kbps |
@@ -77,10 +79,18 @@ measured against, so it is not something a receiver can adapt to.
 | `ACOUSTIC` | 48 kHz | 8000 Bd | 0.30 | 8.0 kHz | 2.8–13.2 kHz | 3.3 – 46.9 kbps |
 | `ACOUSTIC44` | 44.1 kHz | 7350 Bd | 0.30 | 8.0 kHz | 3.2–12.8 kHz | 3.0 – 43.1 kbps |
 
+**`FM44` is the default**, and it is there because of what a real transmitter
+turned out to pass rather than what seemed safe. `RADIO` is sized for a 15 kHz
+audio stage with room to spare; measured on an actual FM path and an SDR, the
+link ran clean right up to the 19 kHz stereo pilot. `FM44` and `FM48` fill that
+instead, stopping just below it. The roll-off is 0.15 rather than 0.20, which
+is what buys the last kilohertz — at 14700 Bd that is an 18.4 kHz footprint
+against 16.9 kHz — and a tighter roll-off is only affordable on a path this
+clean.
+
 `WIDE` is the one for a clean path — a virtual cable, or a link with the full
-audio band available. `RADIO` is sized to survive a transmitter's 15 kHz audio
-stage with room to spare. The last two are the narrowest and most rugged
-footprints, for the worst-behaved paths. `WIDE96` and `STANDARD` are aliases
+audio band available. `RADIO` and the `ACOUSTIC` pair are the narrower, more
+rugged footprints, for paths that will not pass what `FM44` asks of them. `WIDE96` and `STANDARD` are aliases
 for `WIDE` and `WIDE48`.
 
 **192 kbps requires `WIDE`, and `WIDE` requires a 96 kHz sound card.** On an
@@ -303,6 +313,50 @@ tried. The acceptance threshold scales with the preamble length, since that now
 ranges from 72 samples to 1080: measured on noise, the 99.99th percentile of
 the metric is 3.83/√n at every length, and the threshold sits just above it.
 
+## APSK
+
+A third mode, alongside QAM and OFDM, selected from the same dropdown. The
+points sit on concentric rings instead of a square grid: ring *k* of *n* holds
+4 + 8(k−1) points, so *n* rings hold exactly 4n² — 4, 16, 64 and 256 at n = 1,
+2, 4 and 8, which is the ladder's four constellation sizes out of one
+construction. Radii equalise the minimum distance, `r_k = 1 / (2 sin(π/n_k))`,
+which puts 16APSK's outer-to-inner ratio at **2.73** — inside DVB-S2's 2.57 to
+3.15 for the same 4+12 layout, which is a useful check on the rule.
+
+It exists because a square 256QAM has 32 distinct amplitudes and an amplifier
+near saturation gives each a different gain and a different phase; the APSK of
+the same order has 8. The receiver exploits that: the whole distortion is a
+handful of complex numbers, so it estimates one gain and rotation per ring from
+the decisions and takes them back out. That is decision-directed, which this
+codebase has been burned by before, but here it is 2 to 8 unknowns against
+thousands of symbols rather than 25 free taps — over-determined enough that a
+fifth of the decisions being wrong barely moves it.
+
+**Measured, it does not pay off here, and that is worth saying plainly.**
+Against `WIDE48` at 32 dB SNR through a Rapp amplifier model with AM/PM,
+counting frames recovered bit-exact out of 87:
+
+| MODCOD | linear | 8 dB backoff | 5 dB | 4 dB |
+|---|---|---|---|---|
+| 16-point, 3/4 | 84 / 84 | 87 / 87 | 87 / 87 | 87 / 87 |
+| 64-point, 5/6 | 84 / 84 | 87 / 87 | 75 / 76 | 31 / 3 |
+| 256-point, 5/6 | 84 / 82 | 84 / 73 | 0 / 0 | 0 / 0 |
+
+*(QAM / APSK)*
+
+The reason is specific to a pulse-shaped single carrier. The constellation's
+own peak-to-average advantage is 1.75 dB at 256 points — but on the wire, after
+root-raised-cosine shaping, the measured envelope advantage is only **0.86 dB**,
+because between symbol instants the envelope takes every value regardless of
+where the points are. Meanwhile APSK gives up 0.7–0.9 dB of minimum distance.
+The two roughly cancel, and what compression does to the *pulse shape* is
+intersymbol interference, which no per-ring correction can undo.
+
+So APSK is shipped, complete and tested, and QAM remains the default. It is
+worth trying on a real amplifier — the model here is a model, and a path whose
+nonlinearity is a hard clipper in an audio stage rather than a smooth RF
+compression would weigh it differently — but on this simulator it loses.
+
 ## MODCOD ladder
 
 MODCOD sets the payload rate *inside* the footprint, and travels in the frame.
@@ -434,50 +488,6 @@ Codec config and PAD are **retransmitted once a second, not sent once**. A
 receiver joining mid-broadcast has missed anything sent at the start — and so
 has the interleaver's fill region.
 
-## Riding out a dropout
-
-The receiver holds a **reservoir** of decoded audio — six seconds by default —
-and does not start playing until it is full. A loss of lock shorter than that
-never reaches the speaker.
-
-It has to work that way round, and the reason is worth stating because the
-obvious alternative does not exist. The transmitter sends at exactly one times
-real time, because a live stream *produces* at one times real time and there is
-nothing further ahead to send; pulling harder on an Icecast socket gets you the
-server's connect burst once and real time forever after. So the receiver cannot
-be handed a reservoir. It can only make one, by declining to play the first few
-seconds it is given.
-
-The costs are real and all of them are latency:
-
-- audio starts `reservoir` seconds late, on top of the interleaver fill
-- you are permanently that far behind live
-- an underrun costs the whole wait again, because playing fragments as they
-  land sounds worse than one clean pause
-
-A dropout that fits inside the reservoir is inaudible but spends it. At exactly
-one times real time it would stay spent until the next dropout emptied it
-altogether, so play-out runs **0.5% slow** while short — about eight cents of
-pitch, inaudible on music, and it rebuilds a second of reservoir in a little
-over three minutes. Resampling goes through the same windowed-sinc bank the
-demodulator uses; dropping or doubling samples instead would put a click in the
-audio at exactly the moment the listener is least inclined to forgive one.
-
-**The other way to do this is time diversity** — transmit every packet twice, a
-few seconds apart, the way a satellite service rides out a bridge. It protects
-the same interval with no startup wait, and it costs exactly half the payload
-rate:
-
-| Profile / MODCOD | Max audio | Max audio with a full repeat |
-|---|---|---|
-| `RADIO` 256QAM 5/6 | 55.9 kbps | 27.3 kbps |
-| `WIDE48` 64QAM 5/6 | 70.6 kbps | 34.7 kbps |
-| `OFDM48` 64QAM 5/6 | 64.5 kbps | 31.7 kbps |
-
-Spare channel capacity does not buy it. A link configured sensibly runs a few
-kbps under its ceiling, and a few kbps repeats a few per cent of the packets —
-fragments, not audio. Halving the codec rate buys it; nothing else does.
-
 ## Receiver
 
 Acquisition is frame-synchronous and data-aided, with no feedback loops:
@@ -608,7 +618,7 @@ apps together without hardware.
 ```
 qamcore/            the wire format — one copy, both ends
   profiles.py       channel profiles, MODCOD ladder, frame capacity
-  constellation.py  Gray-coded QAM, soft LLR demapping
+  constellation.py  Gray-coded QAM and APSK, soft LLR demapping
   rrc.py            root-raised-cosine shaping and matched filtering
   interp.py         shared fractional-sample interpolation
   conv.py           K=7 convolutional, six rates, numba soft Viterbi

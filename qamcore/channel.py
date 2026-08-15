@@ -38,6 +38,17 @@ class ChannelConfig:
     multipath: list[tuple[float, float]] = field(default_factory=list)
     doppler_hz: float = 0.0
     seed: int | None = None
+    # Amplifier compression. `backoff_db` is how far the signal's *average*
+    # power sits below the amplifier's saturation point, so smaller numbers
+    # mean harder driving; None leaves the channel linear. This is the
+    # impairment APSK exists for, and without it in the simulator the case for
+    # APSK would be an assertion rather than a measurement.
+    backoff_db: float | None = None
+    # AM/PM conversion, degrees at saturation. Solid-state amplifiers have
+    # little; travelling-wave tubes have a lot, and it is the half of
+    # compression that a constellation with many amplitude levels suffers most
+    # from -- every ring gets rotated by a different amount.
+    am_pm_deg: float = 0.0
 
     @property
     def active(self) -> bool:
@@ -48,6 +59,7 @@ class ChannelConfig:
             or self.phase_noise_deg
             or self.multipath
             or self.doppler_hz
+            or self.backoff_db is not None
         )
 
     def summary(self) -> str:
@@ -66,6 +78,9 @@ class ChannelConfig:
             bits.append(f"{len(self.multipath)} echo(s)")
         if self.doppler_hz:
             bits.append(f"{self.doppler_hz:.1f} Hz Doppler")
+        if self.backoff_db is not None:
+            bits.append(f"{self.backoff_db:.1f} dB backoff"
+                        + (f" / {self.am_pm_deg:.0f}deg AM-PM" if self.am_pm_deg else ""))
         return ", ".join(bits)
 
 
@@ -127,6 +142,10 @@ class Channel:
         self._resample_pos = float(interp.LEFT)
         self._resid = np.zeros(0)
         self._hilb = StreamHilbert()
+        # A second one: StreamHilbert carries a tail between calls, so the
+        # offset path and the compression path cannot share an instance
+        # without each corrupting the other's history.
+        self._hilb_comp = StreamHilbert()
 
     def _build_taps(self) -> tuple[np.ndarray, np.ndarray]:
         if not self.config.multipath:
@@ -184,6 +203,49 @@ class Channel:
         self._resid = x[consumed:]
         return out
 
+    def _compress(self, y: np.ndarray) -> np.ndarray:
+        """Drive the signal into an amplifier's compression region.
+
+        Rapp's model for the gain and a square-law term for the phase, applied
+        to the *envelope* rather than to the passband samples. That distinction
+        matters: squashing the real waveform is clipping, which is a different
+        fault with a different remedy. An amplifier compresses the envelope,
+        the harmonics it makes land at multiples of the carrier and are
+        filtered, and what comes back in band is the envelope distortion --
+        which is precisely what a constellation with several amplitude levels
+        cannot ride out and one with two can.
+
+        `backoff_db` is quoted from *average* power, not peak, because average
+        is what an operator sets and what a power meter reads. A signal with a
+        10 dB peak-to-average ratio at 6 dB backoff therefore has peaks 4 dB
+        past saturation, and that is the honest description of what is
+        happening to them.
+        """
+        cfg = self.config
+        if cfg.backoff_db is None or not len(y):
+            return y
+        analytic = self._hilb_comp.process(y)
+        r = np.abs(analytic)
+        avg = float(np.sqrt(np.mean(r ** 2)))
+        if avg <= 0:
+            return y
+        # Saturation amplitude implied by the requested backoff.
+        sat = avg * 10.0 ** (cfg.backoff_db / 20.0)
+        u = r / sat
+        # Rapp, smoothness p: gain falls off ever more sharply as u passes 1.
+        # p = 3 is a reasonable solid-state amplifier; a tube would be softer
+        # and would start bending much earlier.
+        p = 3.0
+        gain = 1.0 / (1.0 + u ** (2 * p)) ** (1.0 / (2 * p))
+        out = analytic * gain
+        if cfg.am_pm_deg:
+            # Phase shift growing with drive, saturating at am_pm_deg. The
+            # rings of an APSK constellation each get their own rotation; a
+            # square QAM's many amplitudes get a continuum of them.
+            shift = np.deg2rad(cfg.am_pm_deg) * (u ** 2) / (1.0 + u ** 2)
+            out = out * np.exp(1j * shift)
+        return np.real(out)
+
     def process(self, x: np.ndarray) -> np.ndarray:
         cfg = self.config
         if not cfg.active:
@@ -204,6 +266,7 @@ class Channel:
             y = np.real(analytic * np.exp(1j * ph))
 
         y = self._apply_clock(y)
+        y = self._compress(y)
 
         if cfg.snr_db is not None and len(y):
             # Es/N0 is defined in the occupied bandwidth, so the noise power

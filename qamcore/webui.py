@@ -55,6 +55,12 @@ def profile_list() -> list[dict]:
     return out
 
 
+def default_profile() -> str:
+    from . import profiles as P
+
+    return P.DEFAULT_PROFILE
+
+
 def modcod_list() -> list[dict]:
     """Every modulation and code rate the header can express."""
     from . import profiles as P

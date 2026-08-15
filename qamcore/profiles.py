@@ -221,7 +221,16 @@ class Profile:
     # OFDM profiles. The geometry is carried as plain numbers rather than an
     # OfdmGeometry so this module need not import ofdm, which imports framing,
     # which imports this one. Built on demand by `geometry` below.
-    mode: str = "sc"          # "sc" single carrier, or "ofdm"
+    # "sc"   single carrier, square QAM
+    # "apsk" single carrier, amplitude-and-phase rings -- same everything else
+    # "ofdm" multicarrier, square QAM
+    #
+    # APSK is offered on single carrier only, and that is not an omission. Its
+    # whole purpose is a lower peak-to-average ratio into a compressed
+    # amplifier; an OFDM signal is the sum of hundreds of subcarriers and is
+    # Gaussian whatever the subcarriers carry, so choosing the constellation
+    # buys nothing there.
+    mode: str = "sc"
     ofdm_fft: int = 0
     ofdm_cp: int = 0
     ofdm_bin_lo: int = 0
@@ -256,6 +265,16 @@ class Profile:
     @property
     def is_ofdm(self) -> bool:
         return self.mode == "ofdm"
+
+    @property
+    def is_apsk(self) -> bool:
+        return self.mode == "apsk"
+
+    @property
+    def constellation_family(self) -> str:
+        """Which point set the MODCOD's bits-per-symbol lands on."""
+        from .constellation import APSK, QAM
+        return APSK if self.mode == "apsk" else QAM
 
     @property
     def ofdm_carriers(self) -> int:
@@ -663,6 +682,86 @@ PROFILES.update({
                        "long prefix for multipath"),
 })
 
+# --------------------------------------------------------------------------
+# The default
+# --------------------------------------------------------------------------
+#
+# What a real FM path turned out to pass, rather than what the RADIO profiles
+# assume. RADIO is sized for a 15 kHz audio stage with room to spare, which is
+# the safe assumption and, measured on an actual transmitter and SDR, a
+# pessimistic one: the path ran clean right up to the stereo pilot. These fill
+# it instead, stopping just below 19 kHz.
+#
+# Roll-off is 0.15 rather than 0.20, which is what buys the last kilohertz --
+# at 14700 Bd it is the difference between an 18.4 kHz footprint and a 16.9 kHz
+# one. A tighter roll-off is a longer pulse and more sensitive to timing, and
+# on a path this clean that is affordable.
+
+PROFILES.update({
+    "FM44": Profile(
+        name="FM44",
+        sample_rate=44100,
+        symbol_rate=14700,
+        rolloff=0.15,
+        carrier=8894.0,
+        frame_symbols=4096,
+        pilot_spacing=64,
+        description="44.1 kHz card, fills an FM audio path below the 19 kHz pilot",
+    ),
+    "FM48": Profile(
+        name="FM48",
+        sample_rate=48000,
+        symbol_rate=16000,
+        rolloff=0.15,
+        carrier=9680.0,
+        frame_symbols=4096,
+        pilot_spacing=64,
+        description="48 kHz card, fills an FM audio path below the 19 kHz pilot",
+    ),
+})
+
+# What both apps and both pages start on. Measured on a real transmitter and
+# receiver rather than chosen for tidiness.
+DEFAULT_PROFILE = "FM44"
+
+# --------------------------------------------------------------------------
+# APSK profiles
+# --------------------------------------------------------------------------
+#
+# The same footprints as their single-carrier namesakes -- identical band,
+# symbol rate, roll-off, frame and pilots -- with the bits laid out on rings
+# instead of a square grid. Nothing about the spectrum changes, so a link moves
+# between the two without re-planning anything, and the MODCOD ladder, the FEC
+# and the framing are untouched.
+#
+# What changes is what happens to the signal in an amplifier that is being
+# driven hard. See constellation.py for the construction and the README for the
+# measured trade: APSK gives up a little on a linear channel and takes it back
+# several times over once the amplifier is into compression.
+
+
+def _apsk(name: str, base: str, description: str) -> Profile:
+    src = PROFILES[base]
+    return Profile(
+        name=name, sample_rate=src.sample_rate, symbol_rate=src.symbol_rate,
+        rolloff=src.rolloff, carrier=src.carrier,
+        frame_symbols=src.frame_symbols, pilot_spacing=src.pilot_spacing,
+        description=description, mode="apsk",
+    )
+
+
+PROFILES.update({
+    "APSK96": _apsk("APSK96", "WIDE",
+                    "96 kHz card, APSK, widest footprint"),
+    "APSK48": _apsk("APSK48", "WIDE48",
+                    "48 kHz card, APSK, full audio band"),
+    "APSK44": _apsk("APSK44", "WIDE44",
+                    "44.1 kHz card, APSK, full audio band"),
+    "APSKRADIO": _apsk("APSKRADIO", "RADIO",
+                       "48 kHz card, APSK, fits a 15 kHz transmitter stage, "
+                       "for a compressed amplifier"),
+})
+
 OFDM_DEFAULT_CARRIERS = {n: p.ofdm_carriers
                          for n, p in PROFILES.items() if p.is_ofdm}
 
@@ -760,7 +859,7 @@ def _frame_for(symbol_rate: int) -> int:
 def make_profile(sample_rate: int, symbol_rate: int, rolloff: float = 0.25,
                  carrier: float | None = None, pilot_spacing: int = 64,
                  frame_symbols: int | None = None,
-                 name: str = "CUSTOM") -> Profile:
+                 name: str = "CUSTOM", mode: str = "sc") -> Profile:
     """Build a profile from explicit parameters.
 
     ``carrier`` defaults to sitting the occupied band just above DC with a
@@ -792,7 +891,7 @@ def make_profile(sample_rate: int, symbol_rate: int, rolloff: float = 0.25,
     profile = Profile(
         name=name, sample_rate=sample_rate, symbol_rate=symbol_rate,
         rolloff=rolloff, carrier=float(carrier), frame_symbols=frame_symbols,
-        pilot_spacing=pilot_spacing,
+        pilot_spacing=pilot_spacing, mode=mode,
         description=f"custom, {sample_rate} Hz card",
     )
     profile.validate()

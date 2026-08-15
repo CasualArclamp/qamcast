@@ -853,7 +853,8 @@ class CodedModulator:
     def modulate_frame(self, modcod, header, payload_bytes) -> np.ndarray:
         from . import constellation, framing
         bits = framing.channel_bits(self.profile, modcod, header, payload_bytes)
-        self.last_symbols = constellation.modulate(bits, modcod.bits_per_symbol)
+        self.last_symbols = constellation.modulate(
+            bits, modcod.bits_per_symbol, self.profile.constellation_family)
         return self._mod.frame(modcod.index, self.last_symbols)
 
     def modulate_symbols(self, symbols: np.ndarray) -> np.ndarray:
@@ -897,7 +898,9 @@ class CodedDemodulator:
                 out.append(res)
                 continue
             res.modcod = modcod
-            res.evm_db = constellation.evm_db(r.symbols, modcod.bits_per_symbol)
+            res.evm_db = constellation.evm_db(
+                r.symbols, modcod.bits_per_symbol,
+                self.profile.constellation_family)
             res.snr_db = res.evm_db
             noise_var = 10.0 ** (-res.evm_db / 10.0)
             hdr, payload = framing.decode_payload(

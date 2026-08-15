@@ -50,7 +50,7 @@ def dominant(x: np.ndarray, rate: int) -> float:
 
 
 def main() -> int:
-    profile_name = sys.argv[1] if len(sys.argv) > 1 else "WIDE48"
+    profile_name = sys.argv[1] if len(sys.argv) > 1 else profiles.DEFAULT_PROFILE
     bitrate_txt = sys.argv[2] if len(sys.argv) > 2 else "64k"
     codec_name = sys.argv[3] if len(sys.argv) > 3 else "opus"
 

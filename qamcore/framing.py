@@ -401,7 +401,8 @@ def build_frame(profile: Profile, modcod: Modcod, header: Header,
     symbols[:PREAMBLE_SYMBOLS] = preamble()
     symbols[PREAMBLE_SYMBOLS:PREAMBLE_SYMBOLS + HEADER_SYMBOLS] = encode_modcod(modcod.index)
     symbols[pilot_slots(profile)] = pilot_sequence(profile.pilot_groups)
-    symbols[data_slots(profile)] = constellation.modulate(channel, modcod.bits_per_symbol)
+    symbols[data_slots(profile)] = constellation.modulate(
+        channel, modcod.bits_per_symbol, profile.constellation_family)
     return symbols
 
 
@@ -429,6 +430,7 @@ def decode_payload(profile: Profile, modcod: Modcod, data: np.ndarray,
     cap = profile.capacity(modcod)
     llr = constellation.demodulate_soft(
         data, modcod.bits_per_symbol, noise_var, csi=csi,
+        family=profile.constellation_family,
     )
     need = conv.channel_bits_for(cap.info_bits, modcod.conv_num, modcod.conv_den)
     info = conv.decode(llr[:need], modcod.conv_num, modcod.conv_den, cap.info_bits)

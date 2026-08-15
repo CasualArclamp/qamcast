@@ -123,6 +123,22 @@
 
   <div class="panel">
     <h2>Link</h2>
+    <label>Mode</label>
+    <select id="mode">
+      <option value="sc" selected>QAM &mdash; single carrier, square constellation</option>
+      <option value="apsk">APSK &mdash; single carrier, rings, for a compressed amplifier</option>
+      <option value="ofdm">OFDM &mdash; multicarrier, for echoes</option>
+    </select>
+    <div class="note why">
+      All three occupy the same bands and share the same coding, framing and
+      MODCOD ladder; only the physical layer differs. QAM is the default and
+      the best on a linear path. OFDM is the one for delay spread. APSK trades
+      about 0.8&nbsp;dB of minimum distance for a lower peak-to-average ratio
+      &mdash; see the README for what that is measured to be worth, which on a
+      pulse-shaped single carrier is less than the satellite literature would
+      lead you to expect.
+    </div>
+
     <label>Preset</label>
     <select id="preset"></select>
 
@@ -502,10 +518,7 @@ async function applyPreset() {
 
 control({cmd:'profiles'}).then(r => {
   META = r;
-  fill($('preset'),
-       [{value:'CUSTOM', text:'Custom - set everything by hand'}]
-       .concat(r.profiles.map(p => ({value: p.name, text: p.label}))),
-       'WIDE48');
+  fillPresets($('mode').value);
   fill($('sampleRate'), r.sample_rates.map(v => ({value: v, text: (v/1000) + ' kHz'})), 48000);
   // Built from the profiles, not hardcoded. A preset whose roll-off is missing
   // from this list cannot be selected into it -- the select silently goes to
@@ -554,6 +567,11 @@ $('copyKey').onclick = async () => {
   setTimeout(() => { b.textContent = was; }, 1200);
 };
 
+$('mode').onchange = () => {
+  if (typeof clearKey === 'function') clearKey('Mode changed');
+  fillPresets($('mode').value);
+  applyPreset();
+};
 $('preset').onchange = applyPreset;
 $('sampleRate').onchange = () => {
   deviate();

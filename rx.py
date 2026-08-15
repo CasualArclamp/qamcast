@@ -124,6 +124,26 @@ class RateMeter:
         return self._bytes * 8.0 / self.window
 
 
+def _shutdown(*objs) -> None:
+    """Close or stop each of these, whatever it takes, without raising.
+
+    Used by the worker on its way out and again by stop(). Running it twice is
+    harmless; running it only in the worker is not enough, because the worker
+    cannot close a device it is blocked reading from.
+    """
+    for obj in objs:
+        if obj is None:
+            continue
+        for name in ("close", "stop"):
+            fn = getattr(obj, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+                break
+
+
 class Receiver:
     def __init__(self, ffmpeg: str | None = None):
         self.ffmpeg = ffmpeg
@@ -136,6 +156,10 @@ class Receiver:
         self._live: dict = {}
         self._last_seq = -1
         self._player = None
+        # The open devices, held here as well as in the worker so that stop()
+        # can shut them down without the worker's cooperation. See stop().
+        self._src = None
+        self._dec = None
         self._volume = 1.0
         self._paused = False
         self.error: str | None = None
@@ -166,9 +190,37 @@ class Receiver:
         return {"ok": True}
 
     def stop(self) -> dict:
+        """Stop, and mean it.
+
+        The worker closes its own devices on the way out, which is enough when
+        it is running. It is not enough when it is *stuck*: a capture stream
+        whose device has gone away -- unplugged, or a virtual cable with
+        nothing writing to it -- blocks in read() and never sees the stop flag.
+        This used to join with a timeout, return ok, and leave both streams
+        open. The interpreter then exited, the daemon thread was killed
+        mid-read, and PortAudio's callback -- which is a native thread, not a
+        Python one, and does not get killed with them -- carried on playing.
+        That is the "I closed it and the audio kept going" case, and stop()
+        reporting success was the reason it was hard to see.
+
+        So: ask nicely, then close the devices from here regardless. Closing
+        the capture stream is also what unblocks the read, letting the worker
+        unwind on its own.
+        """
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=2)
+        stuck = bool(self._thread and self._thread.is_alive())
+        _shutdown(self._src, self._player, self._dec)
+        self._src = self._player = self._dec = None
+        if stuck and self._thread:
+            self._thread.join(timeout=3)
+            stuck = self._thread.is_alive()
+        if stuck:
+            # Nothing is making sound and nothing holds a device, but say so
+            # rather than claim a clean stop we did not get.
+            return {"ok": True, "note": "devices closed; the worker had to be "
+                                        "abandoned rather than joined"}
         return {"ok": True}
 
     def control(self, msg: dict) -> dict:
@@ -236,7 +288,7 @@ class Receiver:
              reservoir: float = RESERVOIR_SECONDS) -> None:
         src = player = dec = None
         try:
-            src = open_input(device, profile.sample_rate)
+            src = self._src = open_input(device, profile.sample_rate)
             dem = (ofdm.CodedDemodulator(profile) if profile.is_ofdm
                    else demodulator.Demodulator(profile))
             player = open_player(outdev, codec.SAMPLE_RATE, record, reservoir)
@@ -304,7 +356,7 @@ class Receiver:
                         if ptype == transport.PKT_CONFIG:
                             if config != payload:
                                 config = payload
-                                dec = restart_decoder(dec, r.header.codec, config,
+                                dec = self._dec = restart_decoder(dec, r.header.codec, config,
                                                       self.ffmpeg)
                         elif ptype == transport.PKT_PAD:
                             got = transport.Pad.decode(payload)
@@ -314,7 +366,7 @@ class Receiver:
                             if dec is None and r.header.codec != framing.CODEC_OPUS:
                                 # AAC needs no out-of-band config: its ADTS
                                 # headers already describe the stream.
-                                dec = restart_decoder(None, r.header.codec, None,
+                                dec = self._dec = restart_decoder(None, r.header.codec, None,
                                                       self.ffmpeg)
                             if dec is not None:
                                 dec.feed([payload])
@@ -344,13 +396,8 @@ class Receiver:
             except NameError:
                 pass
             self._feed = None
-            self._player = None
-            for obj in (src, dec, player):
-                try:
-                    if obj:
-                        obj.close() if hasattr(obj, "close") else obj.stop()
-                except Exception:
-                    pass
+            self._player = self._src = self._dec = None
+            _shutdown(src, dec, player)
             self._state = {**self._state, "running": False, "locked": False,
                            "error": self.error}
             self.telemetry.publish(self._state)
@@ -755,6 +802,43 @@ def open_player(device: str, rate: int, record: str | None = None,
     return live
 
 
+def _install_shutdown(app) -> None:
+    """Make sure the devices come down however this process ends.
+
+    Ctrl+C is already handled where the main loop sits, but that is only one
+    of the ways out. A closed console window, a `kill`, or an unhandled
+    exception all skip it -- and skipping it leaves a sound card open with
+    PortAudio's callback still running on a native thread that does not get
+    killed with Python's, which is exactly the "I closed it and it kept
+    playing" case. atexit covers the ordinary exits and the signals cover the
+    rest. Nothing covers Task Manager's End Task; the OS reclaims the device
+    itself there.
+    """
+    import atexit
+    import signal
+
+    done = threading.Event()
+
+    def once(*_args) -> None:
+        if done.is_set():
+            return
+        done.set()
+        try:
+            app.stop()
+        except Exception:
+            pass
+
+    atexit.register(once)
+    for name in ("SIGTERM", "SIGBREAK", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, lambda *_a: (once(), sys.exit(0)))
+        except (ValueError, OSError):
+            pass          # not the main thread, or not supported here
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -797,6 +881,7 @@ def main() -> int:
         return 0
 
     rx = Receiver(ffmpeg=a.ffmpeg)
+    _install_shutdown(rx)
     if not a.no_ui:
         webui.serve("rx.html", rx.telemetry, rx.control, port=a.port)
         print(f"receive UI at http://127.0.0.1:{a.port}")

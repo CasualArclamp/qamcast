@@ -510,6 +510,28 @@ and was flagged before any code was written. The channel simulator's `reverb`
 preset deliberately exceeds it, and is kept as a failing test so the limit
 stays measured rather than assumed.
 
+## Shutting down
+
+Both apps close their devices on the way out however they are ended: Ctrl+C,
+a `kill`, a closed console, or an unhandled exception. That sounds like it
+should go without saying and it did not.
+
+`stop()` used to set a flag, join the worker with a five second timeout, and
+return `{"ok": True}` whether or not the worker had actually stopped. When the
+capture device had gone away — unplugged, or a virtual cable with nothing
+writing to it — the worker sat in a blocking `read()` and never saw the flag.
+So `stop()` lied, the interpreter exited, the daemon thread was killed
+mid-read, and **PortAudio's callback carried on playing**: it runs on a native
+thread, not a Python one, and does not get killed with them. The audio kept
+going after the process was, to all appearances, closed.
+
+Now the devices are held on the app object as well as in the worker, and
+`stop()` closes them itself rather than hoping the worker will. Closing the
+capture stream is also what unblocks the read, so the worker usually unwinds a
+moment later; if it does not, `stop()` says so instead of claiming a clean
+exit. Nothing covers Task Manager's End Task — the OS reclaims the device
+there, which is why that case never showed the symptom.
+
 ## Verified
 
 Transmitter to `tx.wav` to receiver, no hardware involved:

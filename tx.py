@@ -55,6 +55,26 @@ def parse_rate(text: str) -> int:
     return int(float(t.rstrip("k")) * mult)
 
 
+def _shutdown(*objs) -> None:
+    """Close or stop each of these, whatever it takes, without raising.
+
+    Used by the worker on its way out and again by stop(). Running it twice is
+    harmless; running it only in the worker is not enough, because the worker
+    cannot close a device it is blocked writing to.
+    """
+    for obj in objs:
+        if obj is None:
+            continue
+        for name in ("close", "stop"):
+            fn = getattr(obj, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+                break
+
+
 class Transmitter:
     def __init__(self, ffmpeg: str | None = None):
         self.ffmpeg = ffmpeg
@@ -70,6 +90,10 @@ class Transmitter:
         self._live: dict = {}
         self._last_seq = -1
         self._probe: dict | None = None
+        # The encoder and the output device, held here as well as in the worker
+        # so that stop() can shut them down without the worker's cooperation.
+        self._enc = None
+        self._sink = None
         self._icy: icy.Poller | None = None
         self._meta_swap = False
         self._nowplaying: dict | None = None
@@ -147,12 +171,30 @@ class Transmitter:
                 "detected": self._probe.get("label") if self._probe else None}
 
     def stop(self) -> dict:
-        # The follow is governed by its own checkbox, not by whether anything
-        # is on air -- so stopping the transmitter leaves the panel still
-        # showing what the station is playing.
+        """Stop, and mean it.
+
+        The worker shuts down its own encoder and output on the way out, which
+        is enough when it is running and not enough when it is stuck -- an
+        output stream whose device has gone away blocks in write() and never
+        sees the stop flag. Joining with a timeout and returning ok then left
+        the sound card open and ffmpeg running, and said nothing about it.
+
+        The follow is governed by its own checkbox, not by whether anything is
+        on air -- so stopping the transmitter leaves the panel still showing
+        what the station is playing.
+        """
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=2)
+        stuck = bool(self._thread and self._thread.is_alive())
+        _shutdown(self._enc, self._sink)
+        self._enc = self._sink = None
+        if stuck and self._thread:
+            self._thread.join(timeout=3)
+            stuck = self._thread.is_alive()
+        if stuck:
+            return {"ok": True, "note": "encoder and output closed; the worker "
+                                        "had to be abandoned rather than joined"}
         return {"ok": True}
 
     def set_pad(self, cfg: dict) -> dict:
@@ -332,11 +374,11 @@ class Transmitter:
              passthrough=None) -> None:
         enc = sink = None
         try:
-            enc = codec.Encoder(source, codec_name, bitrate,
+            enc = self._enc = codec.Encoder(source, codec_name, bitrate,
                                 ffmpeg=self.ffmpeg, loop=True,
                                 passthrough=passthrough)
             enc.start()
-            sink = open_output(device, profile.sample_rate)
+            sink = self._sink = open_output(device, profile.sample_rate)
 
             tx = transport.TransmitChain(profile, modcod)
             # One line decides the physical layer. Everything after it --
@@ -458,10 +500,8 @@ class Transmitter:
             except NameError:
                 pass
             self._feed = None
-            if enc:
-                enc.stop()
-            if sink:
-                sink.close()
+            self._enc = self._sink = None
+            _shutdown(enc, sink)
             self._state = {**self._state, "running": False, "error": self.error}
             self.telemetry.publish(self._state)
 
@@ -1096,6 +1136,43 @@ def list_devices(output: bool, every_api: bool = False) -> list[dict]:
     return out
 
 
+def _install_shutdown(app) -> None:
+    """Make sure the devices come down however this process ends.
+
+    Ctrl+C is already handled where the main loop sits, but that is only one
+    of the ways out. A closed console window, a `kill`, or an unhandled
+    exception all skip it -- and skipping it leaves a sound card open with
+    PortAudio's callback still running on a native thread that does not get
+    killed with Python's, which is exactly the "I closed it and it kept
+    playing" case. atexit covers the ordinary exits and the signals cover the
+    rest. Nothing covers Task Manager's End Task; the OS reclaims the device
+    itself there.
+    """
+    import atexit
+    import signal
+
+    done = threading.Event()
+
+    def once(*_args) -> None:
+        if done.is_set():
+            return
+        done.set()
+        try:
+            app.stop()
+        except Exception:
+            pass
+
+    atexit.register(once)
+    for name in ("SIGTERM", "SIGBREAK", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, lambda *_a: (once(), sys.exit(0)))
+        except (ValueError, OSError):
+            pass          # not the main thread, or not supported here
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1176,6 +1253,7 @@ def main() -> int:
         return 0
 
     tx = Transmitter(ffmpeg=a.ffmpeg)
+    _install_shutdown(tx)
     if not a.no_ui:
         webui.serve("tx.html", tx.telemetry, tx.control, port=a.port)
         print(f"transmit UI at http://127.0.0.1:{a.port}")

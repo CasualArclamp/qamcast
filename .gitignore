@@ -3,12 +3,15 @@ __pycache__/
 .venv/
 venv/
 
-# Modem output and captures. tx.wav in particular gets large quickly.
+# Modem output and captures, and the test tone the selftest generates.
+# tx.wav in particular gets large quickly.
 tx.wav
 rx.wav
 *_out.wav
 selftest_out.wav
+selftest_tone.wav
 
 .vscode/
 .idea/
 Thumbs.db
+selftest_tone.wav

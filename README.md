@@ -434,6 +434,50 @@ Codec config and PAD are **retransmitted once a second, not sent once**. A
 receiver joining mid-broadcast has missed anything sent at the start — and so
 has the interleaver's fill region.
 
+## Riding out a dropout
+
+The receiver holds a **reservoir** of decoded audio — six seconds by default —
+and does not start playing until it is full. A loss of lock shorter than that
+never reaches the speaker.
+
+It has to work that way round, and the reason is worth stating because the
+obvious alternative does not exist. The transmitter sends at exactly one times
+real time, because a live stream *produces* at one times real time and there is
+nothing further ahead to send; pulling harder on an Icecast socket gets you the
+server's connect burst once and real time forever after. So the receiver cannot
+be handed a reservoir. It can only make one, by declining to play the first few
+seconds it is given.
+
+The costs are real and all of them are latency:
+
+- audio starts `reservoir` seconds late, on top of the interleaver fill
+- you are permanently that far behind live
+- an underrun costs the whole wait again, because playing fragments as they
+  land sounds worse than one clean pause
+
+A dropout that fits inside the reservoir is inaudible but spends it. At exactly
+one times real time it would stay spent until the next dropout emptied it
+altogether, so play-out runs **0.5% slow** while short — about eight cents of
+pitch, inaudible on music, and it rebuilds a second of reservoir in a little
+over three minutes. Resampling goes through the same windowed-sinc bank the
+demodulator uses; dropping or doubling samples instead would put a click in the
+audio at exactly the moment the listener is least inclined to forgive one.
+
+**The other way to do this is time diversity** — transmit every packet twice, a
+few seconds apart, the way a satellite service rides out a bridge. It protects
+the same interval with no startup wait, and it costs exactly half the payload
+rate:
+
+| Profile / MODCOD | Max audio | Max audio with a full repeat |
+|---|---|---|
+| `RADIO` 256QAM 5/6 | 55.9 kbps | 27.3 kbps |
+| `WIDE48` 64QAM 5/6 | 70.6 kbps | 34.7 kbps |
+| `OFDM48` 64QAM 5/6 | 64.5 kbps | 31.7 kbps |
+
+Spare channel capacity does not buy it. A link configured sensibly runs a few
+kbps under its ceiling, and a few kbps repeats a few per cent of the packets —
+fragments, not audio. Halving the codec rate buys it; nothing else does.
+
 ## Receiver
 
 Acquisition is frame-synchronous and data-aided, with no feedback loops:

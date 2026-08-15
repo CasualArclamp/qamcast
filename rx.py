@@ -26,8 +26,8 @@ import wave
 
 import numpy as np
 
-from qamcore import (codec, demodulator, framing, linkkey, ofdm, profiles,
-                     scope, transport, webui)
+from qamcore import (codec, demodulator, framing, interp, linkkey, ofdm,
+                     profiles, scope, transport, webui)
 
 # Before anything is decoded the constellation is unknown, so start at the
 # floor; scope.symbol_budget raises it once the MODCOD arrives.
@@ -39,6 +39,33 @@ SCOPE_HZ = 20             # UI refresh, independent of the block or frame rate
 # on the page. 1024 samples is ~21 ms at 48 kHz.
 BLOCK = 1024
 PROBE_MARGIN_DB = 2.0
+
+# Seconds of decoded audio held back before play-out starts, and the level the
+# player works its way back to after a dropout has eaten into it.
+#
+# This is the only thing standing between a loss of lock and a hole in the
+# audio, and it is worth being clear about why it has to be this and not
+# something cleverer. The transmitter sends at exactly one times real time,
+# because a live stream produces at one times real time and there is nothing
+# further ahead to send. So the receiver cannot be given a reservoir; it can
+# only make one, by declining to play the first few seconds it is given. After
+# that it is ahead by however long it waited, and a dropout shorter than that
+# never reaches the speaker.
+#
+# The alternative -- transmitting each packet twice, a few seconds apart, the
+# way a satellite service rides out a bridge -- protects the same interval
+# without the startup wait, and costs exactly half the payload rate. That is a
+# real option on a link with capacity to spare and not one on a link running
+# 4 kbps under its ceiling, which is what a sensibly configured one does.
+RESERVOIR_SECONDS = 6.0
+
+# How much slower than real time to play while rebuilding the reservoir. A
+# dropout leaves it short, and at exactly one times it would stay short until
+# the next dropout emptied it altogether. 0.5% is about eight cents of pitch,
+# which is inaudible on music and refills a second of reservoir in a little
+# over three minutes -- fast enough to be ready for the next bridge, slow
+# enough that nobody hears it happening.
+REFILL_SLOWDOWN = 0.005
 
 
 class RateMeter:
@@ -131,7 +158,9 @@ class Receiver:
         self._thread = threading.Thread(
             target=self._run,
             args=(profile, cfg.get("device", ""), cfg.get("outdev", ""),
-                  cfg.get("record") or None),
+                  cfg.get("record") or None,
+                  float(cfg["reservoir"]) if cfg.get("reservoir") is not None
+                  else RESERVOIR_SECONDS),
             daemon=True)
         self._thread.start()
         return {"ok": True}
@@ -203,13 +232,14 @@ class Receiver:
 
     # -- worker ----------------------------------------------------------
 
-    def _run(self, profile, device, outdev, record=None) -> None:
+    def _run(self, profile, device, outdev, record=None,
+             reservoir: float = RESERVOIR_SECONDS) -> None:
         src = player = dec = None
         try:
             src = open_input(device, profile.sample_rate)
             dem = (ofdm.CodedDemodulator(profile) if profile.is_ofdm
                    else demodulator.Demodulator(profile))
-            player = open_player(outdev, codec.SAMPLE_RATE, record)
+            player = open_player(outdev, codec.SAMPLE_RATE, record, reservoir)
             # Carry the listener's settings across a restart rather than
             # springing full volume on them when the device reopens.
             player.set_volume(self._volume)
@@ -301,6 +331,9 @@ class Receiver:
                     "chain": chain, "result": last_result, "modcod": modcod,
                     "codec_id": codec_id, "pad": pad, "frames": frames,
                     "buffered": player.buffered if player.monitors else None,
+                    "reservoir": player.reservoir if player.monitors else None,
+                    "priming": player.priming if player.monitors else False,
+                    "underruns": player.underruns if player.monitors else 0,
                     "audio_rate": meter.rate(),
                 }
         except Exception as exc:
@@ -374,6 +407,9 @@ class Receiver:
             "bridged": chain.stats.bridged_frames if chain else 0,
             "chain_resyncs": chain.stats.resyncs if chain else 0,
             "audio_buffer": live.get("buffered"),
+            "reservoir": live.get("reservoir"),
+            "priming": live.get("priming"),
+            "underruns": live.get("underruns"),
             "volume": self._volume,
             "paused": self._paused,
             "pad_station": pad.station,
@@ -486,6 +522,11 @@ class Monitoring:
     # no jitter buffer, and reporting its 0.0 as a buffer level makes an
     # empty-sounding fault out of nothing at all.
     monitors = False
+    # Only a player with a clock has a reservoir. A file is written as fast as
+    # the audio is recovered and has nothing to run out of.
+    reservoir = 0.0
+    priming = False
+    underruns = 0
 
     def set_volume(self, value: float) -> None:
         self.volume = min(1.0, max(0.0, float(value)))
@@ -535,6 +576,18 @@ class WavPlayer(Monitoring):
     def buffered(self) -> float:
         return self._also.buffered if self._also else self._n / 4 / self._rate
 
+    @property
+    def reservoir(self) -> float:
+        return self._also.reservoir if self._also else 0.0
+
+    @property
+    def priming(self) -> bool:
+        return bool(self._also and self._also.priming)
+
+    @property
+    def underruns(self) -> int:
+        return self._also.underruns if self._also else 0
+
     # The file keeps the audio as recovered; only the speaker follows these.
     def set_volume(self, value: float) -> None:
         if self._also:
@@ -551,44 +604,108 @@ class WavPlayer(Monitoring):
 
 
 class DevicePlayer(Monitoring):
-    """Plays decoded PCM, with a small jitter buffer.
+    """Plays decoded PCM, holding a reservoir against loss of lock.
 
     The modem delivers audio in frame-sized bursts, not smoothly, so writing
-    straight to the device would underrun constantly.
+    straight to the device would underrun constantly. That much needs only a
+    jitter buffer; the reservoir above is the same buffer made deliberately
+    deep, and the two costs are quite different -- a jitter buffer is free and
+    a reservoir is paid for in latency, every second of it.
     """
 
     monitors = True
 
-    def __init__(self, index: int | None, rate: int):
+    def __init__(self, index: int | None, rate: int,
+                 reservoir: float = RESERVOIR_SECONDS):
         import sounddevice as sd
-        self._buf = bytearray()
         self._lock = threading.Lock()
         self._rate = rate
+        self._target = max(0.0, float(reservoir))
+        # Silent until the reservoir first fills, and again after any underrun.
+        # Starting the moment audio exists would spend the whole reservoir
+        # immediately and leave nothing for the first dropout.
+        self._priming = self._target > 0.0
+        self._underruns = 0
+        # The buffer always opens with the interpolation window's history in
+        # it, and the cursor always sits past that history. Holding the
+        # invariant from the start means the first block out is read exactly
+        # like every later one -- padding each block instead puts a step in the
+        # filter's input at every boundary, which rings once the slow refill
+        # engages.
+        self._buf = bytearray(interp.LEFT * 4)
+        self._pos = float(interp.LEFT)
 
         def callback(outdata, frames, _time, _status):
-            need = frames * 2 * 2
-            with self._lock:
-                take = self._buf[:need]
-                del self._buf[:need]
-                gain, paused = self.volume, self.paused
-            if len(take) < need:
-                take = bytes(take) + bytes(need - len(take))
-            block = np.frombuffer(bytes(take), dtype="<i2").reshape(-1, 2)
-            # Paused still consumes the buffer. This is a live broadcast with
-            # no way to ask for the missing seconds back, so holding the audio
-            # would only grow the queue and put the listener further behind
-            # with every second paused. Silence now, live again on resume.
-            if paused:
-                block = np.zeros_like(block)
-            elif gain < 0.999:
-                block = (block.astype(np.int32) * int(gain * 4096) >> 12
-                         ).clip(-32768, 32767).astype(np.int16)
-            outdata[:] = block
+            outdata[:] = self._pull(frames)
 
         self.stream = sd.OutputStream(samplerate=rate, channels=2, dtype="int16",
                                       device=index, callback=callback,
                                       blocksize=1024, latency="high")
         self.stream.start()
+
+    # -- play-out ---------------------------------------------------------
+
+    def _pull(self, frames: int) -> np.ndarray:
+        with self._lock:
+            gain, paused = self.volume, self.paused
+
+            have = len(self._buf) // 4
+            held = (have - interp.LEFT) / self._rate
+            if self._priming:
+                if held < self._target:
+                    return np.zeros((frames, 2), dtype=np.int16)
+                self._priming = False
+
+            # Slightly slow while short, so a reservoir spent on one dropout
+            # comes back rather than being gone for the rest of the session.
+            rate = 1.0 - REFILL_SLOWDOWN if held < self._target - 0.05 else 1.0
+            # Enough to reach the last sample wanted, plus the right half of
+            # the interpolation window that reads past it.
+            need = int(self._pos + rate * (frames - 1)) + interp.RIGHT + 1
+
+            if have < need:
+                # Nothing left to stretch. Refuse to dribble: go silent and
+                # rebuild, which costs one wait and then holds, where playing
+                # every fragment as it lands costs a broken sound forever.
+                self._underruns += 1
+                self._priming = self._target > 0.0
+                self._buf[:] = bytes(interp.LEFT * 4)
+                self._pos = float(interp.LEFT)
+                return np.zeros((frames, 2), dtype=np.int16)
+
+            # Read from a window of the buffer, not the whole of it: the buffer
+            # is seconds long by design and converting all of it every callback
+            # would be megabytes of copying per block.
+            lo = int(self._pos) - interp.LEFT
+            src = np.frombuffer(bytes(self._buf[lo * 4:need * 4]),
+                                dtype="<i2").reshape(-1, 2).astype(np.float64)
+            idx = (self._pos - lo) + rate * np.arange(frames)
+            # Always through the interpolator, even at rate 1.0. Its phase-zero
+            # row is exactly a delta, so an integer read costs nothing in
+            # accuracy -- while switching to plain indexing would truncate the
+            # fractional position left over from a refill and step the audio.
+            out = np.stack([interp.sample_at(src[:, ch], idx) for ch in (0, 1)],
+                           axis=1)
+            self._pos += rate * frames
+            drop = int(self._pos) - interp.LEFT
+            if drop > 0:
+                del self._buf[:drop * 4]
+                self._pos -= drop
+            block = np.clip(np.rint(out), -32768, 32767).astype(np.int16)
+        return self._shape(block, gain, paused)
+
+    @staticmethod
+    def _shape(block: np.ndarray, gain: float, paused: bool) -> np.ndarray:
+        # Paused still consumes the buffer. This is a live broadcast with no
+        # way to ask for the missing seconds back, so holding the audio would
+        # only grow the queue and put the listener further behind with every
+        # second paused. Silence now, live again on resume.
+        if paused:
+            return np.zeros_like(block)
+        if gain < 0.999:
+            return (block.astype(np.int32) * int(gain * 4096) >> 12
+                    ).clip(-32768, 32767).astype(np.int16)
+        return block
 
     def write(self, pcm: bytes) -> None:
         with self._lock:
@@ -597,7 +714,19 @@ class DevicePlayer(Monitoring):
     @property
     def buffered(self) -> float:
         with self._lock:
-            return len(self._buf) / 4 / self._rate
+            return max(0.0, len(self._buf) / 4 - interp.LEFT) / self._rate
+
+    @property
+    def reservoir(self) -> float:
+        return self._target
+
+    @property
+    def priming(self) -> bool:
+        return self._priming
+
+    @property
+    def underruns(self) -> int:
+        return self._underruns
 
     def close(self) -> None:
         try:
@@ -613,11 +742,12 @@ def open_input(device: str, rate: int):
     return DeviceSource(int(device), rate)
 
 
-def open_player(device: str, rate: int, record: str | None = None):
+def open_player(device: str, rate: int, record: str | None = None,
+                reservoir: float = RESERVOIR_SECONDS):
     live: object = NullPlayer()
     if device and device != "none":
         try:
-            live = DevicePlayer(int(device), rate)
+            live = DevicePlayer(int(device), rate, reservoir)
         except Exception:
             live = NullPlayer()
     if record:
@@ -643,6 +773,11 @@ def main() -> int:
     ap.add_argument("--output", default="", help="output device index, or 'none'")
     ap.add_argument("--input", dest="infile", default=None, help="decode a wav file")
     ap.add_argument("--record", default=None, help="write recovered audio to a wav")
+    ap.add_argument("--reservoir", type=float, default=RESERVOIR_SECONDS,
+                    help="seconds of decoded audio held back before play-out "
+                         "starts, and rebuilt to after a dropout. Costs this "
+                         "much startup delay and rides out a loss of lock that "
+                         "long. 0 for the old jitter-buffer-only behaviour.")
     ap.add_argument("--port", type=int, default=8732)
     ap.add_argument("--ffmpeg", default=None)
     ap.add_argument("--no-ui", action="store_true")
@@ -680,7 +815,7 @@ def main() -> int:
                         "outdev": a.output, "record": a.record,
                         "sample_rate": a.sample_rate, "symbol_rate": a.symbol_rate,
                         "rolloff": a.rolloff, "carrier": a.carrier,
-                        "carriers": a.carriers,
+                        "carriers": a.carriers, "reservoir": a.reservoir,
                         "pilot_spacing": a.pilot_spacing})
         if res.get("error"):
             print(res["error"], file=sys.stderr)

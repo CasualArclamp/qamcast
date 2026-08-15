@@ -59,6 +59,9 @@
     <label>Interleaver fill</label>
     <div class="bar"><i id="fillBar" style="width:0%"></i></div>
     <div class="note" id="fillNote">&nbsp;</div>
+    <label>Audio reservoir</label>
+    <div class="bar"><i id="resBar" style="width:0%"></i></div>
+    <div class="note" id="resNote">&nbsp;</div>
     <div class="note why">
       Es/N0 is measured as EVM, so it is the effective figure &mdash; every
       impairment counts against it, not just noise. That is deliberate: it is
@@ -148,6 +151,25 @@
     <div class="note why">
       Do not pick the same virtual cable for playback that you are listening
       on, or the decoded audio goes straight back into the modem's input.
+    </div>
+
+    <label>Audio reservoir</label>
+    <select id="reservoir">
+      <option value="0">off &mdash; play as soon as audio arrives</option>
+      <option value="2">2 s</option>
+      <option value="4">4 s</option>
+      <option value="6" selected>6 s &mdash; matches the interleaver</option>
+      <option value="10">10 s</option>
+      <option value="20">20 s</option>
+    </select>
+    <div class="note why">
+      Seconds of decoded audio held back before play-out starts. A dropout
+      shorter than this never reaches the speaker &mdash; but you wait this
+      long for audio at startup, and again after any underrun, and you are
+      permanently this far behind live. The transmitter cannot help here: a
+      live stream produces at one times real time and has nothing further
+      ahead to send, so the only way to get ahead of a broadcast is to decline
+      to play the beginning of it.
     </div>
   </div>
 
@@ -457,6 +479,22 @@ connect(s => {
     ['evm', 'corr', 'freq', 'ppm', 'audiobuf'].forEach(id => grade(id, ''));
   }
 
+  // How much of a loss of lock the listener would not hear. Graded against the
+  // reservoir's own target rather than a fixed number, because the target is
+  // the operator's choice of how much delay to trade for it.
+  const res = s.reservoir || 0, held = s.audio_buffer || 0;
+  $('resBar').style.width = (res ? Math.min(100, held / res * 100) : 0) + '%';
+  if (!s.running || s.reservoir == null) set('resNote', ' ');
+  else if (!res) set('resNote', 'Off — audio starts at once, and any loss '
+      + 'of lock is heard.');
+  else if (s.priming) set('resNote', `Filling: ${held.toFixed(1)} of `
+      + `${res.toFixed(0)} s. Audio starts when it is full.`);
+  else set('resNote', `${held.toFixed(1)} s in hand — a dropout shorter `
+      + `than that is inaudible.`
+      + (held < res - 0.1 ? ' Rebuilding at 0.5% slow.' : '')
+      + (s.underruns ? `  ${s.underruns} underrun`
+                       + (s.underruns > 1 ? 's' : '') + ' so far.' : ''));
+
   $('fillBar').style.width = Math.min(100,(s.fill ?? 0)*100)+'%';
   set('fillNote', s.fill_note || ' ');
   set('pstation', s.pad_station || '-');
@@ -476,6 +514,7 @@ $('start').onclick = async () => {
   const r = await control({cmd:'start',
     profile: $('preset').value,
     link_key: KEY,
+    reservoir: +$('reservoir').value,
     carriers: +$('carriers').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,

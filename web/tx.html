@@ -175,9 +175,25 @@
     <label>Roll-off</label>
     <select id="rolloff"></select>
 
+    <div id="carrierRow" style="display:none">
+      <label>Subcarriers</label>
+      <select id="carriers"></select>
+      <div class="note why">
+        The one dial OFDM has. The band is already fixed, so the carrier count
+        is the subcarrier spacing: fewer carriers means wider spacing, which a
+        drifting transmitter cannot push a signal out of, and a shorter guard
+        interval, which a room echo walks straight past. More carriers trades
+        it the other way. Throughput barely moves either way &mdash; that is
+        set by the bandwidth, not by how finely it is sliced. Must match at
+        the receiver.
+      </div>
+    </div>
+
     <table style="margin-top:12px">
       <tr><td>Occupied</td><td id="pBand">-</td></tr>
-      <tr><td>Samples/symbol</td><td id="pSps">-</td></tr>
+      <tr id="rEcho" style="display:none"><td>Absorbs echo</td><td id="pEcho">-</td></tr>
+      <tr id="rOffset" style="display:none"><td>Pulls in offset</td><td id="pOffset">-</td></tr>
+      <tr><td id="lSps">Samples/symbol</td><td id="pSps">-</td></tr>
       <tr><td>Channel rate</td><td id="pNet">-</td></tr>
       <tr><td>Audio ceiling</td><td id="pMax">-</td></tr>
       <tr><td>Needs EVM</td><td id="pEvm">-</td></tr>
@@ -358,6 +374,7 @@ async function resolve(driver) {
       locks: [...LOCKS],
       codec: $('codec').value,
       profile: $('preset').value,     // so the pilot spacing matches Start's
+      carriers: +$('carriers').value || 0,
       sample_rate: +$('sampleRate').value,
       symbol_rate: +$('symbolRate').value,
       bitrate: readBitrate(),
@@ -378,6 +395,17 @@ async function resolve(driver) {
     document.querySelectorAll('button.lock').forEach(b => {
       b.style.display = isOfdm && b.dataset.lock !== 'modcod' ? 'none' : '';
     });
+    // The carrier count is the only geometry control OFDM has, so it appears
+    // only there -- and takes over the row the symbol rate holds otherwise.
+    $('carrierRow').style.display = isOfdm ? '' : 'none';
+    ['rEcho', 'rOffset'].forEach(id => $(id).style.display = isOfdm ? '' : 'none');
+    if (isOfdm) {
+      fill($('carriers'), r.ofdm.carrier_choices.map(
+             c => ({value: c, text: c + ' carriers'})), r.ofdm.carriers);
+      set('pEcho', r.ofdm.delay_spread_ms.toFixed(2) + ' ms');
+      set('pOffset', '±' + r.ofdm.max_offset_hz + ' Hz');
+    }
+    set('lSps', isOfdm ? 'Transform' : 'Samples/symbol');
     set('ofdmNote', isOfdm ? r.ofdm.describe : ' ');
     fill($('symbolRate'), isOfdm
          ? [{value: r.symbol_rate, text: r.symbol_rate + ' sym/s'}]
@@ -450,6 +478,11 @@ async function applyPreset() {
       }
     }
   }
+  // Clear the carrier count so the preset arrives at its own default rather
+  // than inheriting whatever the last OFDM profile was set to. Each one has a
+  // different sensible default, and a preset that does not give you the preset
+  // is worse than one that forgets a setting.
+  $('carriers').value = '';
   await resolve('preset');
   if (released) set('pWarn', released);
 }
@@ -509,6 +542,9 @@ $('symbolRate').onchange = () => { deviate(); resolve('symbol_rate'); };
 $('modulation').onchange = () => resolve('modcod');
 $('codeRate').onchange   = () => resolve('modcod');
 $('rolloff').onchange    = () => { deviate(); resolve('rolloff'); };
+// No deviate(): the carrier count is part of an OFDM profile rather than a
+// departure from it, so the preset name still describes the link afterwards.
+$('carriers').onchange   = () => resolve('carriers');
 
 // A text box fires `change` on blur, which would leave the panels describing
 // the old number while the box shows the new one. Enter solves immediately;
@@ -786,6 +822,7 @@ $('start').onclick = async () => {
     passthrough: $('passthrough').checked,
     bitrate: readBitrate(),
     profile: $('preset').value,
+    carriers: +$('carriers').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,
     rolloff: +$('rolloff').value,

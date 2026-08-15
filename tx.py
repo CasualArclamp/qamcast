@@ -305,6 +305,7 @@ class Transmitter:
             return {"profiles": webui.profile_list(),
                     "modcods": webui.modcod_list(),
                     "sample_rates": webui.sample_rates(),
+                    "carrier_choices": list(profiles.OFDM_CARRIER_CHOICES),
                     "symbol_rates": {str(r): webui.symbol_rates(r)
                                      for r in webui.sample_rates()}}
         if cmd == "solve":
@@ -486,8 +487,14 @@ class Transmitter:
         state = {
             "running": True,
             "profile": profile.name,
-            "footprint": f"{str(modcod)} \u00b7 {profile.symbol_rate} Bd \u00b7 "
-                         f"{lo/1000:.1f}-{hi/1000:.1f} kHz",
+            # An OFDM profile has no symbol rate to quote -- the one on the
+            # profile is the single-carrier one it borrowed its band from, and
+            # printing that would describe a signal nobody is transmitting.
+            "footprint": f"{str(modcod)} \u00b7 "
+                         + (f"{profile.geometry.carriers} carriers"
+                            if profile.is_ofdm
+                            else f"{profile.symbol_rate} Bd")
+                         + f" \u00b7 {lo/1000:.1f}-{hi/1000:.1f} kHz",
             "modcod": str(modcod),
             # What this rung needs to be received. Quoted as Es/N0 but
             # measured as EVM, which is the same number on a link whose only
@@ -575,7 +582,13 @@ def build_profile(cfg: dict) -> profiles.Profile:
     """A named preset, or one built from the explicit fields."""
     name = str(cfg.get("profile") or "WIDE").upper()
     if name != "CUSTOM":
-        return profiles.get_profile(name)
+        profile = profiles.get_profile(name)
+        # An OFDM profile's carrier count is a front-panel setting in exactly
+        # the way the profile itself is: it changes the frame geometry, none
+        # of it travels in the header, and both ends must be set the same.
+        if profile.is_ofdm and cfg.get("carriers"):
+            profile = profiles.with_carriers(profile, int(cfg["carriers"]))
+        return profile
     return profiles.make_profile(
         sample_rate=int(cfg.get("sample_rate") or 48000),
         symbol_rate=int(cfg.get("symbol_rate") or 16000),
@@ -681,11 +694,12 @@ def _tightest_modcod(sample_rate: int, symbol_rate: int, bitrate: int,
 
 def _solve_ofdm(profile: profiles.Profile, msg: dict) -> dict:
     """What the UI shows for an OFDM profile."""
-    geo = profile.geometry
     try:
+        profile = profiles.with_carriers(profile, msg.get("carriers") or None)
         modcod = pick_modcod(msg, profile, 0)
     except (KeyError, ValueError) as exc:
         return {"error": f"bad settings: {exc}"}
+    geo = profile.geometry
     cap = profile.capacity(modcod)
     ceiling = max(0.0, cap.net_bitrate - profiles.PAD_RESERVE_BPS)
     bitrate = int(msg.get("bitrate") or 64000)
@@ -727,9 +741,20 @@ def _solve_ofdm(profile: profiles.Profile, msg: dict) -> dict:
                     f"or raise the MODCOD.",
         "ofdm": {
             "fft": geo.fft, "cp": geo.cp, "carriers": geo.carriers,
+            "carrier_choices": list(profiles.OFDM_CARRIER_CHOICES),
             "spacing": round(geo.bin_spacing, 1),
             "delay_spread_ms": round(geo.max_delay_spread * 1000, 2),
+            "max_offset_hz": round(geo.max_freq_offset),
+            "pilot_every": geo.pilot_every,
             "describe": geo.describe(),
+            # The two halves of the trade, in the terms an operator has to
+            # choose between: an echo longer than the first, or a transmitter
+            # further off frequency than the second, is what breaks the link.
+            "trade": (f"Absorbs echoes up to "
+                      f"{geo.max_delay_spread * 1000:.2f} ms and carrier "
+                      f"offsets up to {geo.max_freq_offset:.0f} Hz. Fewer "
+                      f"carriers trade echo tolerance for offset tolerance; "
+                      f"more trade it back."),
         },
     }
 
@@ -1032,6 +1057,10 @@ def main() -> int:
     ap.add_argument("--symbol-rate", type=int, default=None, help="baud")
     ap.add_argument("--rolloff", type=float, default=0.25)
     ap.add_argument("--carrier", type=float, default=None)
+    ap.add_argument("--carriers", type=int, default=None,
+                    choices=list(profiles.OFDM_CARRIER_CHOICES),
+                    help="OFDM subcarriers; fewer rides out frequency drift, "
+                         "more rides out echoes. Must match at both ends.")
     ap.add_argument("--pilot-spacing", type=int, default=64, choices=[32, 64, 128])
     ap.add_argument("--modcod", default=None,
                     help="MODCOD index; omit to choose from the bitrate")
@@ -1113,7 +1142,8 @@ def main() -> int:
         bitrate = parse_rate(a.bitrate)
         spec = {"profile": a.profile, "sample_rate": a.sample_rate,
                 "symbol_rate": a.symbol_rate, "rolloff": a.rolloff,
-                "carrier": a.carrier, "pilot_spacing": a.pilot_spacing,
+                "carrier": a.carrier, "carriers": a.carriers,
+                "pilot_spacing": a.pilot_spacing,
                 "modcod": a.modcod, "modulation": a.modulation,
                 "code_rate": a.code_rate}
         try:

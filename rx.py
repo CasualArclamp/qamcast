@@ -152,6 +152,7 @@ class Receiver:
             return {"profiles": webui.profile_list(),
                     "modcods": webui.modcod_list(),
                     "sample_rates": webui.sample_rates(),
+                    "carrier_choices": list(profiles.OFDM_CARRIER_CHOICES),
                     "symbol_rates": {str(r): webui.symbol_rates(r)
                                      for r in webui.sample_rates()}}
         if cmd == "solve":
@@ -616,6 +617,9 @@ def main() -> int:
     ap.add_argument("--symbol-rate", type=int, default=None, help="baud")
     ap.add_argument("--rolloff", type=float, default=0.25)
     ap.add_argument("--carrier", type=float, default=None)
+    ap.add_argument("--carriers", type=int, default=None,
+                    choices=list(profiles.OFDM_CARRIER_CHOICES),
+                    help="OFDM subcarriers; must match the transmitter")
     ap.add_argument("--pilot-spacing", type=int, default=64, choices=[32, 64, 128])
     ap.add_argument("--device", default="", help="input device index, or 'wav'")
     ap.add_argument("--output", default="", help="output device index, or 'none'")
@@ -658,6 +662,7 @@ def main() -> int:
                         "outdev": a.output, "record": a.record,
                         "sample_rate": a.sample_rate, "symbol_rate": a.symbol_rate,
                         "rolloff": a.rolloff, "carrier": a.carrier,
+                        "carriers": a.carriers,
                         "pilot_spacing": a.pilot_spacing})
         if res.get("error"):
             print(res["error"], file=sys.stderr)

@@ -137,12 +137,12 @@ margin to absorb it.
 Four profiles carry the same bands over OFDM instead of a single carrier, so a
 link can move between the two without re-planning the spectrum:
 
-| Profile | Fs | Carriers | Spacing | Prefix | Occupied | Top rate |
-|---|---|---|---|---|---|---|
-| `OFDM96` | 96 kHz | 409 | 93.8 Hz | 1.33 ms | 3.8–42.2 kHz | 175 kbps |
-| `OFDM48` | 48 kHz | 204 | 93.8 Hz | 1.33 ms | 0.9–20.1 kHz | 87 kbps |
-| `OFDM44` | 44.1 kHz | 204 | 86.1 Hz | 1.45 ms | 1.2–18.8 kHz | 80 kbps |
-| `OFDMRADIO` | 48 kHz | 127 | 93.8 Hz | 2.67 ms | 1.0–12.9 kHz | 49 kbps |
+| Profile | Fs | Default carriers | Occupied | Top rate |
+|---|---|---|---|---|
+| `OFDM96` | 96 kHz | 384 | 3.8–42.2 kHz | 176 kbps |
+| `OFDM48` | 48 kHz | 192 | 0.9–20.1 kHz | 88 kbps |
+| `OFDM44` | 44.1 kHz | 192 | 1.2–18.8 kHz | 79 kbps |
+| `OFDMRADIO` | 48 kHz | 128 | 1.0–13.0 kHz | 48 kbps |
 
 It exists because the single-carrier equaliser cannot be made to reach
 further. It corrects ±12 symbols, and training a longer one on the *true*
@@ -180,13 +180,68 @@ a frame and corrected in the time domain before the transform, since the
 damage is interference done before it. Measured recovery: exact to 0.01 Hz at
 offsets of 5, 15 and 30 Hz.
 
-**Known limitation.** OFDM passes the clean and AWGN channels on every profile
-and MODCOD tried, and beats single carrier decisively on multipath. It does
-*not* yet pass the `radio` and `noisy` simulator presets, which combine a
-frequency offset with clock error and echoes: about 15% of frames are lost
-ongoing, and the interleaver never fills. Single carrier passes both. The
-remaining work is residual sampling-frequency-offset tracking, not
-architecture.
+### Choosing the carrier count
+
+The band is fixed by the profile, so the number of carriers *is* the subcarrier
+spacing, and the spacing sets both halves of the only trade OFDM has. It is
+selectable at both ends — 24, 32, 48, 64, 96, 128, 192, 256 or 384 — because
+which half matters depends on the link. On `OFDM48`:
+
+| Carriers | Spacing | Absorbs echo | Pulls in offset | Top rate |
+|---|---|---|---|---|
+| 24 | 750 Hz | 0.17 ms | 333 Hz | 82 kbps |
+| 32 | 585 Hz | 0.21 ms | 261 Hz | 89 kbps |
+| 48 | 393 Hz | 0.31 ms | 175 Hz | 94 kbps |
+| 64 | 300 Hz | 0.42 ms | 133 Hz | 93 kbps |
+| 96 | 198 Hz | 0.62 ms | 88 Hz | 92 kbps |
+| 128 | 150 Hz | 0.83 ms | 67 Hz | 90 kbps |
+| 192 | 100 Hz | 1.25 ms | 44 Hz | 88 kbps |
+| 256 | 75 Hz | 1.67 ms | 33 Hz | 84 kbps |
+| 384 | 50 Hz | 2.50 ms | 22 Hz | 84 kbps |
+
+Throughput barely moves, and that is not luck: the payload rate comes from the
+occupied bandwidth, not from how finely it is divided. What moves is which
+impairment breaks the link first — an echo longer than the third column, or a
+transmitter further off frequency than the fourth. Loopback bears the table
+out. The `acoustic` preset (1.1 ms echo) needs 96 carriers or more; the `radio`
+preset (15 Hz offset) fails at 384 on `OFDM48` and gets no lock at all at 384
+on `OFDMRADIO`, whose 31 Hz spacing puts 15 Hz half a subcarrier out.
+
+Both ends must be set the same, exactly like the profile — none of it travels
+in the header. `--carriers 64` on both apps, or the dropdown on both pages. A
+count shows in the profile name, so `OFDM48-64` names the link completely and
+can be handed straight to `--profile` at the far end.
+
+**Frame duration is held near 220 ms across the whole range** rather than left
+to scale with the symbol. The preamble overhead, the acquisition delay and the
+interval between offset updates are all counted in frames, and letting those
+swing by sixteen with the carrier count would mean moving one dial moved
+everything. Fixing the duration leaves exactly one thing moving.
+
+### Sync
+
+Preamble detection correlates in quadrature — against the preamble and against
+the same preamble shifted 90°, combined as a magnitude. That is the difference
+between working and not. A single real correlation measures the cosine of the
+carrier phase, and a frequency offset walks that phase steadily: 2 Hz against a
+225 ms frame advances it 162° per frame, so the peak slid from 0.99 to 0.31
+over ten frames, was rejected, re-acquired and slid again. It looked like a
+timing fault and was not — the timing offset was zero throughout. The magnitude
+of the two arms does not depend on the phase at all.
+
+The tracking window also has to be able to look *backwards*. Trimming the
+buffer to the predicted position quietly made the next search one-sided, so a
+preamble arriving earlier than predicted could not be found: the peak search
+pinned to the window edge and decayed as the real peak receded behind it. That
+is what a sampling clock does in one of its two directions, and it cost a frame
+every nine at 20 ppm. A signal this wide has a correlation about two samples
+across, so two samples of unsearchable drift is the whole peak.
+
+Together those two took OFDM from losing ~12% of frames ongoing on the `radio`
+and `noisy` presets to zero resyncs and 43 of 43 frames on every carrier count
+tried. The acceptance threshold scales with the preamble length, since that now
+ranges from 72 samples to 1080: measured on noise, the 99.99th percentile of
+the metric is 3.83/√n at every length, and the threshold sits just above it.
 
 ## MODCOD ladder
 
@@ -367,8 +422,17 @@ WIDE48, 48 kHz: locked, EVM 46-52 dB, zero RS failures
 ```
 
 `tools/loopback.py` passes on every profile over the clean, noisy and radio
-channel presets; `tools/dfree.py` confirms every punctured rate matches its
-published free distance.
+channel presets — including all four OFDM profiles at all nine carrier counts,
+which is where the `acoustic` preset starts sorting them by prefix length.
+`tools/dfree.py` confirms every punctured rate matches its published free
+distance.
+
+A profile name carries its carrier count, so the end-to-end check runs at any
+of them:
+
+```bash
+python tools/selftest.py OFDM48-32 32k opus
+```
 
 ## Licence
 

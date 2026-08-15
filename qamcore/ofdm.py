@@ -46,6 +46,19 @@ import numpy as np
 # 256QAM standing up across a frame.
 PILOT_EVERY = 12
 
+# A fraction is the wrong rule at the narrow end, though. A 24-carrier geometry
+# with one pilot in twelve gets two of them, and a straight line through two
+# noisy points is not a fit -- it is an interpolation, with nothing left over to
+# average the noise away, and the phase tilt below is fitted rather than
+# averaged for a reason. Below this width the stride tightens instead. It costs
+# throughput on the small geometries and is what makes them work at all.
+MIN_PILOTS = 4
+
+
+def pilot_stride(carriers: int) -> int:
+    """One pilot every N subcarriers, for a geometry this wide."""
+    return max(2, min(PILOT_EVERY, carriers // MIN_PILOTS))
+
 
 @dataclass(frozen=True)
 class OfdmGeometry:
@@ -103,6 +116,22 @@ class OfdmGeometry:
         return self.cp / self.sample_rate
 
     @property
+    def max_freq_offset(self) -> float:
+        """Carrier offset the receiver can still measure, Hz.
+
+        The estimator fits the pilots' common phase against symbol index, so
+        the advance from one symbol to the next has to stay under half a turn
+        -- past that the unwrap folds it back and reports the wrong offset
+        confidently. The bound is one over twice the symbol duration, and since
+        the symbol lengthens with the carrier count this is the other side of
+        the trade the count sets: 333 Hz at 24 carriers on a 48 kHz card, 22 Hz
+        at 384. Measured: OFDMRADIO at 384 carriers pulls in 12.5 Hz and gets
+        no lock at all against the 15 Hz `radio` preset, while every narrower
+        geometry on the same band rides straight through it.
+        """
+        return 0.5 / self.symbol_duration
+
+    @property
     def frame_symbols(self) -> int:
         """OFDM symbols per frame, including preamble and codeword."""
         return self.symbols_per_frame + 2
@@ -117,10 +146,15 @@ class OfdmGeometry:
 
     # ---- payload --------------------------------------------------------
 
+    @property
+    def pilot_every(self) -> int:
+        """Subcarriers between references inside a data symbol."""
+        return pilot_stride(self.carriers)
+
     @functools.cached_property
     def pilot_bins(self) -> np.ndarray:
         """Subcarriers carrying a reference inside a data symbol."""
-        offsets = np.arange(0, self.carriers, PILOT_EVERY)
+        offsets = np.arange(0, self.carriers, self.pilot_every)
         return self.bin_lo + offsets
 
     @functools.cached_property
@@ -149,10 +183,10 @@ class OfdmGeometry:
 
     def describe(self) -> str:
         lo, hi = self.band
-        return (f"{self.fft}-point, {self.carriers} carriers "
-                f"({self.bin_spacing:.1f} Hz apart), CP {self.cp} "
-                f"= {self.max_delay_spread*1000:.2f} ms, "
-                f"{lo/1000:.1f}-{hi/1000:.1f} kHz, "
+        return (f"{self.carriers} carriers {self.bin_spacing:.0f} Hz apart, "
+                f"{self.fft}-point, {lo/1000:.1f}-{hi/1000:.1f} kHz. "
+                f"Absorbs {self.max_delay_spread*1000:.2f} ms of echo, "
+                f"pulls in {self.max_freq_offset:.0f} Hz of carrier offset. "
                 f"{self.symbol_rate:.0f} payload sym/s")
 
 
@@ -179,6 +213,108 @@ def geometry(sample_rate: int, band_lo: float, band_hi: float, fft: int = 512,
 
 
 # --------------------------------------------------------------------------
+# Fitting a wanted number of carriers into a wanted band
+# --------------------------------------------------------------------------
+#
+# The other way round from `geometry` above, and the more useful one to operate:
+# say how many carriers you want and let the transform size follow, rather than
+# picking a transform size and counting what lands inside the band.
+#
+# It is the same one dial an OFDM design has, seen from the end that means
+# something. For a band that is already fixed, the carrier count *is* the
+# subcarrier spacing, and the spacing sets both halves of the trade at once:
+#
+#   more carriers -> narrower spacing -> longer symbol -> longer prefix for the
+#       same overhead -> more echo absorbed, and less room for frequency error
+#       before a neighbour's energy lands on top of yours
+#   fewer carriers -> wider spacing -> a frequency offset is a smaller fraction
+#       of it -> shrugs off drift, and the prefix shrinks with the symbol until
+#       there is no echo tolerance left to speak of
+#
+# What does *not* move much is the throughput, and that is not a coincidence:
+# the payload rate is set by the occupied bandwidth, not by how finely it is
+# sliced. Measured across 24 to 384 carriers in the same band the payload
+# symbol rate varies by about 10%, all of it pilot overhead at the narrow end.
+
+# Frame length aimed for, seconds. Held roughly constant across carrier counts
+# on purpose. The preamble overhead, the acquisition delay and the interval
+# between carrier-offset updates are all counted in frames, so letting the
+# frame duration swing by a factor of sixteen with the carrier count would mean
+# changing the carrier count quietly changed all of those too. Fixing the
+# duration leaves exactly one thing moving -- the trade above -- which is the
+# whole point of putting it on a dial.
+FRAME_TARGET_SECONDS = 0.22
+
+# The MODCOD codeword is laid across the subcarriers, and there are 32 of them
+# to tell apart. Below 24 columns the Walsh construction stops even producing
+# 32 distinct rows, so the narrowest geometry that can signal every MODCOD is
+# the narrowest geometry there is.
+MIN_CARRIERS = 24
+
+# Floor on the data symbols in a frame, which only bites where the symbols are
+# so long that the target duration would not hold many. Two of them are
+# preamble and codeword, so a frame of six would spend a quarter of the air on
+# overhead -- and the carrier-offset estimate is a straight line fitted through
+# one point per symbol, which wants more than a handful to mean anything.
+MIN_FRAME_SYMBOLS = 12
+
+
+def fit_carriers(sample_rate: int, band_lo: float, band_hi: float,
+                 carriers: int) -> tuple[int, int, int]:
+    """Smallest transform giving exactly ``carriers`` bins inside the band.
+
+    Exactly, not approximately: the count is what the operator selects and what
+    both ends must agree on, so it is the input rather than something to be
+    reported back afterwards. The transform size is whatever delivers it, which
+    is generally not a power of two -- a 24-carrier fit at 48 kHz wants a
+    64-point transform and a 32-carrier fit wants an 82-point one. Nothing here
+    needs a power of two; these transforms are a few hundred points and run
+    twenty times a frame.
+
+    Returns ``(fft, bin_lo, bin_hi)``. The occupied bins are centred in
+    whatever the band has room for, so the signal never spills past the edges
+    the profile asked for.
+    """
+    if carriers < MIN_CARRIERS:
+        raise ValueError(f"at least {MIN_CARRIERS} carriers, got {carriers}")
+    width = band_hi - band_lo
+    if width <= 0:
+        raise ValueError(f"empty band {band_lo:.0f}-{band_hi:.0f} Hz")
+    # Start from the spacing that would fill the band exactly and walk up.
+    # Rounding lands within a carrier or so, and each step of two adds a
+    # fraction of one, so this is a handful of iterations rather than a search.
+    fft = max(4, int(sample_rate * carriers / width) & ~1)
+    while True:
+        spacing = sample_rate / fft
+        lo = max(1, int(np.ceil(band_lo / spacing)))
+        hi = min(fft // 2 - 1, int(np.floor(band_hi / spacing)) - 1)
+        room = hi - lo + 1
+        if room >= carriers:
+            lo += (room - carriers) // 2
+            return fft, lo, lo + carriers - 1
+        fft += 2
+
+
+def for_carriers(sample_rate: int, band_lo: float, band_hi: float,
+                 carriers: int, cp_fraction: int = 8,
+                 symbols_per_frame: int | None = None) -> OfdmGeometry:
+    """A geometry with a chosen number of carriers in a chosen band.
+
+    ``symbols_per_frame`` defaults to whatever holds the frame near
+    FRAME_TARGET_SECONDS, so the frame stays the same length in time as the
+    carrier count moves and only the time-frequency trade changes.
+    """
+    fft, bin_lo, bin_hi = fit_carriers(sample_rate, band_lo, band_hi, carriers)
+    cp = max(1, fft // cp_fraction)
+    if symbols_per_frame is None:
+        want = FRAME_TARGET_SECONDS * sample_rate / (fft + cp)
+        symbols_per_frame = max(MIN_FRAME_SYMBOLS, int(round(want)) - 2)
+    return OfdmGeometry(sample_rate=sample_rate, fft=fft, cp=cp,
+                        bin_lo=bin_lo, bin_hi=bin_hi,
+                        symbols_per_frame=symbols_per_frame)
+
+
+# --------------------------------------------------------------------------
 # Known references
 # --------------------------------------------------------------------------
 
@@ -197,12 +333,28 @@ def reference(carriers: int, seed: int = 1) -> np.ndarray:
     return np.exp(-1j * np.pi * q * k * (k + 1) / n)
 
 
+def _preamble_spectrum(geo: OfdmGeometry) -> np.ndarray:
+    spec = np.zeros(geo.fft // 2 + 1, dtype=complex)
+    spec[geo.bin_lo:geo.bin_hi + 1] = reference(geo.carriers)
+    return spec
+
+
 @functools.lru_cache(maxsize=None)
 def _preamble_time(geo: OfdmGeometry) -> np.ndarray:
     """The preamble symbol as transmitted, prefix included."""
-    spec = np.zeros(geo.fft // 2 + 1, dtype=complex)
-    spec[geo.bin_lo:geo.bin_hi + 1] = reference(geo.carriers)
-    return _to_time(spec, geo)
+    return _to_time(_preamble_spectrum(geo), geo)
+
+
+@functools.lru_cache(maxsize=None)
+def _preamble_quad(geo: OfdmGeometry) -> np.ndarray:
+    """The preamble shifted 90 degrees -- the other half of the matched filter.
+
+    Multiplying every bin by -j shifts each component a quarter cycle, which is
+    the Hilbert transform of the preamble computed exactly rather than
+    estimated. Exactly, because the transform is over the same periodic body
+    the prefix is copied from, so there are no window edges to get wrong.
+    """
+    return _to_time(-1j * _preamble_spectrum(geo), geo)
 
 
 def _to_time(spec: np.ndarray, geo: OfdmGeometry) -> np.ndarray:
@@ -232,16 +384,41 @@ def _pilot_values(geo: OfdmGeometry, index: int) -> np.ndarray:
     return ref * np.exp(2j * np.pi * (index + 1) * np.arange(len(ref)) / len(ref))
 
 
+def _modcod_length(carriers: int) -> int:
+    """Codeword length to lay across a geometry this wide.
+
+    A power of two wherever possible, because the codewords are Walsh rows and
+    those are orthogonal over a power-of-two length and *not* over an arbitrary
+    truncation of one. Cutting 64 columns down to 48 leaves pairs correlating
+    at 0.33, which drags the detector's clean margin from 1.0 to 0.67 and eats
+    the noise headroom on the one field every other field waits for. Taking 32
+    columns instead -- and letting the spare carriers hold a partial repeat the
+    receiver ignores -- is exact.
+
+    Below 32 carriers there is no exact answer: 32 codewords cannot be mutually
+    orthogonal in fewer than 32 dimensions. The narrowest geometry takes the
+    0.67 margin, which is still well clear of the 0.25 needed to accept.
+    """
+    from . import framing
+    if carriers < framing.MODCOD_CODEWORDS:
+        return carriers
+    n = framing.MODCOD_CODEWORDS
+    while n * 2 <= min(carriers, framing.HEADER_SYMBOLS):
+        n *= 2
+    return n
+
+
 def _modcod_spectrum(geo: OfdmGeometry, modcod_index: int) -> np.ndarray:
     """The MODCOD codeword spread across every occupied subcarrier.
 
-    The codeword is 64 symbols and there are more subcarriers than that, so it
-    is tiled. The receiver averages the repeats before correlating, which is
-    free processing gain on the one field everything else waits for -- the
-    payload cannot be demapped until the MODCOD is known.
+    Tiled where the carriers outnumber the codeword. The receiver averages the
+    whole repeats before correlating, which is free processing gain on the one
+    field everything else waits for -- the payload cannot be demapped until the
+    MODCOD is known. Any ragged tail is still transmitted, so the occupied band
+    stays filled; the receiver simply does not fold it in.
     """
     from . import framing
-    word = framing.encode_modcod(modcod_index)
+    word = framing.encode_modcod(modcod_index, _modcod_length(geo.carriers))
     reps = int(np.ceil(geo.carriers / len(word)))
     return np.tile(word, reps)[:geo.carriers]
 
@@ -295,8 +472,33 @@ class Modulator:
 # Normalised correlation needed to accept a preamble. The same reasoning as
 # the single-carrier front end: well above the sidelobe floor against random
 # payload, so acquisition cannot lock to a sidelobe and report nonsense.
+#
+# It cannot be one number, because the preamble is one OFDM symbol and that is
+# 1080 samples at 384 carriers and 72 at 24. A normalised correlation against
+# unrelated data falls off as 1/sqrt(length), and measured on pure noise the
+# 99.99th percentile of the metric comes out at 3.83/sqrt(length) at every
+# length tried -- 0.16 at 540 samples, 0.29 at 180, 0.45 at 72. A single 0.35
+# is a sensible floor for the wide geometries and *below the noise* for the
+# narrow ones, which would have them acquiring on silence.
+#
+# Set just above that floor rather than as high as the signal would allow,
+# because the two errors are not symmetric. Accepting a sidelobe costs two
+# frames: the MODCOD codeword then fails to detect, the next prediction misses,
+# and the receiver re-acquires. Rejecting a real preamble costs the link. The
+# measured true peak runs 1.00 on a clean channel and 0.50-0.70 through
+# multipath, so there is room either way -- but only in this direction is
+# getting it wrong cheap.
 SYNC_THRESHOLD = 0.35
+SYNC_FLOOR_K = 4.4          # 1.15x the measured noise floor of 3.83/sqrt(n)
+SYNC_THRESHOLD_MAX = 0.55   # never above what multipath leaves of the peak
 MODCOD_MARGIN = 0.25
+
+
+def sync_threshold(preamble_samples: int) -> float:
+    """Correlation to accept, for a preamble of this length."""
+    return float(min(SYNC_THRESHOLD_MAX,
+                     max(SYNC_THRESHOLD,
+                         SYNC_FLOOR_K / np.sqrt(preamble_samples))))
 
 
 @dataclass
@@ -361,7 +563,19 @@ class Demodulator:
         self._start = 0            # absolute sample index of _buf[0]
         self._next: int | None = None   # where the next preamble is expected
         self._ref = _preamble_time(geo)
-        self._ref_norm = self._ref / np.linalg.norm(self._ref)
+        norm = np.linalg.norm(self._ref)
+        self._ref_norm = self._ref / norm
+        # Scaled by the in-phase reference's norm, not its own. The two are
+        # equal to a rounding error -- a signal and its Hilbert transform carry
+        # the same energy -- but making that an assumption rather than a shared
+        # constant would put a small gain error between the two arms, which is
+        # exactly what a quadrature detector must not have.
+        self._ref_quad = _preamble_quad(geo) / norm
+        self._sync = sync_threshold(len(self._ref))
+        # How far either side of the prediction to look for the next preamble:
+        # a hundred ppm of clock error over a frame, and the odd sample a
+        # resampler adds or drops at startup.
+        self._slack = max(16, int(geo.frame_samples * 2e-3))
         self._known = reference(geo.carriers)
         self._chan: np.ndarray | None = None
         # Running carrier frequency offset estimate, Hz. OFDM needs this in a
@@ -380,6 +594,17 @@ class Demodulator:
 
         Normalised by the local energy so the threshold means the same thing
         at any level -- there is no AGC ahead of this.
+
+        Correlated in quadrature -- against the preamble and against the same
+        preamble shifted 90 degrees, combined as a magnitude. That is not
+        refinement, it is the difference between working and not. A single real
+        correlation measures cos(theta) of the carrier phase, and a frequency
+        offset walks theta steadily: measured on the `noisy` preset, 2 Hz
+        against a 225 ms frame advances it 162 degrees per frame, so the peak
+        slid from 0.99 to 0.31 over ten frames, was rejected, re-acquired, and
+        slid again -- losing a frame roughly every ten, forever. It looked like
+        a timing fault and was not; the timing offset was zero throughout. The
+        magnitude of the two arms does not depend on theta at all.
         """
         n = len(self._ref)
         lo = max(lo, self._start)
@@ -388,9 +613,10 @@ class Demodulator:
             return None
         a, b = lo - self._start, hi - self._start + n
         seg = self._buf[a:b]
-        corr = np.correlate(seg, self._ref_norm, mode="valid")
+        ci = np.correlate(seg, self._ref_norm, mode="valid")
+        cq = np.correlate(seg, self._ref_quad, mode="valid")
         energy = np.sqrt(np.convolve(seg ** 2, np.ones(n), mode="valid"))
-        metric = np.abs(corr) / np.maximum(energy, 1e-12)
+        metric = np.hypot(ci, cq) / np.maximum(energy, 1e-12)
         best = int(np.argmax(metric))
         return lo + best, float(metric[best])
 
@@ -411,7 +637,7 @@ class Demodulator:
             if self._next is None:
                 # Acquisition: scan forward for anything over threshold.
                 found = self._metric(self._start, self._start + geo.frame_samples)
-                if found is None or found[1] < SYNC_THRESHOLD:
+                if found is None or found[1] < self._sync:
                     if end - self._start > 2 * geo.frame_samples:
                         self._trim(self._start + geo.frame_samples)
                     break
@@ -420,14 +646,14 @@ class Demodulator:
 
             # Enough slack for a hundred ppm of clock error over a frame, and
             # for the odd sample a resampler adds or drops at startup.
-            slack = max(16, int(geo.frame_samples * 2e-3))
+            slack = self._slack
             if end < self._next + geo.frame_samples + slack:
                 break
             found = self._metric(self._next - slack, self._next + slack)
             if found is None:
                 break
             start, peak = found
-            if peak < SYNC_THRESHOLD:
+            if peak < self._sync:
                 # Lost it. Re-acquire from scratch rather than drifting on a
                 # prediction that is no longer anchored to anything.
                 self.stats.resyncs += 1
@@ -439,7 +665,17 @@ class Demodulator:
             res.timing_offset = start - self._next
             out.append(res)
             self._next = start + geo.frame_samples
-            self._trim(start + geo.frame_samples)
+            # Keep the slack window's worth of history rather than cutting to
+            # the prediction. Cutting there quietly makes the next search
+            # one-sided, because _metric will not read before the buffer
+            # starts, and a preamble arriving *earlier* than predicted then
+            # cannot be found at all -- the argmax pins to the window edge and
+            # the metric decays as the real peak recedes behind it. That is
+            # what a sampling clock does in one of its two directions, and it
+            # cost a frame every nine on a 20 ppm channel: the correlation of a
+            # signal this wide is only about two samples across, so two samples
+            # of unsearchable drift is the whole peak.
+            self._trim(start + geo.frame_samples - slack)
         return out
 
     def _trim(self, absolute: int) -> None:
@@ -491,14 +727,11 @@ class Demodulator:
 
         rx_mc = _from_time(sym[1], geo)[bins] / chan
         from . import framing
-        word = framing.encode_modcod(0)
-        reps = len(rx_mc) // len(word)
-        if reps >= 1:
-            # Fold the tiled repeats before correlating -- free processing
-            # gain on the field everything else waits for.
-            folded = rx_mc[:reps * len(word)].reshape(reps, len(word)).mean(axis=0)
-        else:
-            folded = rx_mc
+        width = _modcod_length(geo.carriers)
+        reps = max(1, len(rx_mc) // width)
+        # Fold the whole repeats before correlating -- free processing gain on
+        # the field everything else waits for.
+        folded = rx_mc[:reps * width].reshape(reps, width).mean(axis=0)
         index, margin = framing.detect_modcod(folded)
 
         result = OfdmResult(symbols=np.zeros(0, dtype=complex),

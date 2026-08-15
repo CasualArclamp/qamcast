@@ -227,6 +227,12 @@ class Profile:
     ofdm_bin_lo: int = 0
     ofdm_bin_hi: int = 0
     ofdm_symbols: int = 0     # data symbols per frame
+    # The single-carrier profile whose band this OFDM one fills. Kept because
+    # `band` reports the bins actually driven, which is narrower than the band
+    # they were fitted into -- re-fitting a different carrier count against
+    # that would walk the signal inwards a little more every time.
+    ofdm_base: str = ""
+    ofdm_cp_fraction: int = 0
 
     # ---- geometry -------------------------------------------------------
 
@@ -244,6 +250,16 @@ class Profile:
     @property
     def is_ofdm(self) -> bool:
         return self.mode == "ofdm"
+
+    @property
+    def ofdm_carriers(self) -> int:
+        """Subcarriers this profile drives. OFDM profiles only."""
+        return self.ofdm_bin_hi - self.ofdm_bin_lo + 1 if self.is_ofdm else 0
+
+    @property
+    def family(self) -> str:
+        """The profile name without any carrier-count suffix."""
+        return self.name.rsplit("-", 1)[0] if self.is_ofdm else self.name
 
     @property
     def geometry(self):
@@ -559,35 +575,94 @@ PROFILES.update({
 #
 # Bin counts are computed rather than written down, so a band edge can never
 # disagree with the geometry that serves it.
+#
+# How many carriers fill that band is the one dial the mode has, and it is a
+# selectable one rather than a design-time constant. See the note in ofdm.py:
+# with the band fixed, the carrier count sets the subcarrier spacing, and the
+# spacing decides how much echo the prefix absorbs against how much frequency
+# error the signal shrugs off. Throughput barely moves, because that is set by
+# the occupied bandwidth and not by how finely it is divided.
 
-def _ofdm(name: str, base: str, fft: int, cp_fraction: int, symbols: int,
+# What the dial offers. Both ends must be set the same, exactly like the
+# profile itself -- none of this travels in the header.
+OFDM_CARRIER_CHOICES = (24, 32, 48, 64, 96, 128, 192, 256, 384)
+
+
+def _ofdm(name: str, base: str, carriers: int, cp_fraction: int,
           description: str) -> Profile:
+    from .ofdm import for_carriers
+
     src = PROFILES[base]
-    spacing = src.sample_rate / fft
     lo, hi = src.band
-    bin_lo = max(1, int(-(-lo // spacing)))
-    bin_hi = min(fft // 2 - 1, int(hi // spacing) - 1)
+    geo = for_carriers(src.sample_rate, lo, hi, carriers, cp_fraction)
     return Profile(
         name=name, sample_rate=src.sample_rate, symbol_rate=src.symbol_rate,
         rolloff=src.rolloff, carrier=src.carrier,
         frame_symbols=src.frame_symbols, pilot_spacing=src.pilot_spacing,
-        description=description, mode="ofdm", ofdm_fft=fft,
-        ofdm_cp=fft // cp_fraction, ofdm_bin_lo=bin_lo, ofdm_bin_hi=bin_hi,
-        ofdm_symbols=symbols,
+        description=description, mode="ofdm", ofdm_fft=geo.fft,
+        ofdm_cp=geo.cp, ofdm_bin_lo=geo.bin_lo, ofdm_bin_hi=geo.bin_hi,
+        ofdm_symbols=geo.symbols_per_frame, ofdm_base=base,
+        ofdm_cp_fraction=cp_fraction,
     )
 
 
+# The counts here are the defaults, not limits -- each of these profiles will
+# build at any count in OFDM_CARRIER_CHOICES. They are the widest rung that
+# comfortably fits the band, which is the right default: the echo tolerance is
+# what OFDM is for, and a link that turns out to be drifting rather than
+# echoing can be walked down the dial.
 PROFILES.update({
-    "OFDM96": _ofdm("OFDM96", "WIDE", 1024, 8, 18,
+    "OFDM96": _ofdm("OFDM96", "WIDE", 384, 8,
                     "96 kHz card, OFDM, widest footprint"),
-    "OFDM48": _ofdm("OFDM48", "WIDE48", 512, 8, 18,
+    "OFDM48": _ofdm("OFDM48", "WIDE48", 192, 8,
                     "48 kHz card, OFDM, full audio band"),
-    "OFDM44": _ofdm("OFDM44", "WIDE44", 512, 8, 18,
+    "OFDM44": _ofdm("OFDM44", "WIDE44", 192, 8,
                     "44.1 kHz card, OFDM, full audio band"),
-    "OFDMRADIO": _ofdm("OFDMRADIO", "RADIO", 512, 4, 18,
+    "OFDMRADIO": _ofdm("OFDMRADIO", "RADIO", 128, 4,
                        "48 kHz card, OFDM, fits a 15 kHz transmitter stage, "
                        "long prefix for multipath"),
 })
+
+OFDM_DEFAULT_CARRIERS = {n: p.ofdm_carriers
+                         for n, p in PROFILES.items() if p.is_ofdm}
+
+
+def with_carriers(profile: Profile, carriers: int | None) -> Profile:
+    """The same profile re-fitted to a different number of subcarriers.
+
+    The band is taken from the single-carrier profile this one was fitted
+    into, not from what it currently occupies, so moving the dial back and
+    forth lands on the same geometry every time rather than creeping inwards.
+    """
+    if not profile.is_ofdm or carriers is None:
+        return profile
+    carriers = int(carriers)
+    if carriers == profile.ofdm_carriers:
+        return profile
+    if carriers not in OFDM_CARRIER_CHOICES:
+        raise ValueError(
+            f"{carriers} subcarriers is not one of "
+            f"{', '.join(str(c) for c in OFDM_CARRIER_CHOICES)}"
+        )
+    from .ofdm import for_carriers
+
+    src = PROFILES[profile.ofdm_base]
+    lo, hi = src.band
+    geo = for_carriers(src.sample_rate, lo, hi, carriers,
+                       profile.ofdm_cp_fraction)
+    out = Profile(
+        name=f"{profile.family}-{carriers}",
+        sample_rate=profile.sample_rate, symbol_rate=profile.symbol_rate,
+        rolloff=profile.rolloff, carrier=profile.carrier,
+        frame_symbols=profile.frame_symbols,
+        pilot_spacing=profile.pilot_spacing,
+        description=profile.description, mode="ofdm", ofdm_fft=geo.fft,
+        ofdm_cp=geo.cp, ofdm_bin_lo=geo.bin_lo, ofdm_bin_hi=geo.bin_hi,
+        ofdm_symbols=geo.symbols_per_frame, ofdm_base=profile.ofdm_base,
+        ofdm_cp_fraction=profile.ofdm_cp_fraction,
+    )
+    out.validate()
+    return out
 
 ALIASES = {"WIDE96": "WIDE", "STANDARD": "WIDE48"}
 
@@ -598,12 +673,18 @@ for _p in PROFILES.values():
 def get_profile(name: str) -> Profile:
     key = name.upper()
     key = ALIASES.get(key, key)
-    try:
+    if key in PROFILES:
         return PROFILES[key]
-    except KeyError:
-        raise ValueError(
-            f"unknown profile {name!r}; expected one of {', '.join(PROFILES)}"
-        ) from None
+    # "OFDM48-64" -- an OFDM profile at a chosen carrier count. Named so the
+    # name still describes the link once the dial has been moved, and so it
+    # round-trips: whatever the status panel shows can be handed straight back
+    # to --profile at the far end.
+    head, sep, tail = key.rpartition("-")
+    if sep and tail.isdigit() and head in PROFILES and PROFILES[head].is_ofdm:
+        return with_carriers(PROFILES[head], int(tail))
+    raise ValueError(
+        f"unknown profile {name!r}; expected one of {', '.join(PROFILES)}"
+    )
 
 
 def profiles_for_rate(sample_rate: int) -> list[Profile]:

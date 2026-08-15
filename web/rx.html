@@ -106,9 +106,22 @@
       <option value="0.35">0.35</option>
     </select>
 
+    <div id="carrierRow" style="display:none">
+      <label>Subcarriers</label>
+      <select id="carriers"></select>
+      <div class="note why">
+        Not something the receiver can work out for itself &mdash; the carrier
+        count changes the frame geometry and none of it travels in the header,
+        so it has to be set to whatever the transmitter is using, exactly like
+        the profile.
+      </div>
+    </div>
+
     <table style="margin-top:12px">
       <tr><td>Expect signal at</td><td id="pBand">-</td></tr>
-      <tr><td>Samples/symbol</td><td id="pSps">-</td></tr>
+      <tr id="rEcho" style="display:none"><td>Absorbs echo</td><td id="pEcho">-</td></tr>
+      <tr id="rOffset" style="display:none"><td>Pulls in offset</td><td id="pOffset">-</td></tr>
+      <tr><td id="lSps">Samples/symbol</td><td id="pSps">-</td></tr>
       <tr><td>Frame</td><td id="pFrame">-</td></tr>
     </table>
     <div class="note" id="ofdmNote">&nbsp;</div>
@@ -183,6 +196,7 @@ async function resolve() {
   if (!META) return;
   const r = await control({
     cmd: 'solve', driver: 'symbol_rate', profile: $('preset').value,
+    carriers: +$('carriers').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,
     rolloff: +$('rolloff').value,
@@ -193,6 +207,15 @@ async function resolve() {
   $('symbolRate').disabled = isOfdm;
   $('rolloff').disabled = isOfdm || $('preset').value !== 'CUSTOM';
   $('sampleRate').disabled = isOfdm || $('preset').value !== 'CUSTOM';
+  $('carrierRow').style.display = isOfdm ? '' : 'none';
+  ['rEcho', 'rOffset'].forEach(id => $(id).style.display = isOfdm ? '' : 'none');
+  if (isOfdm) {
+    fill($('carriers'), r.ofdm.carrier_choices.map(
+           c => ({value: c, text: c + ' carriers'})), r.ofdm.carriers);
+    set('pEcho', r.ofdm.delay_spread_ms.toFixed(2) + ' ms');
+    set('pOffset', '±' + r.ofdm.max_offset_hz + ' Hz');
+  }
+  set('lSps', isOfdm ? 'Transform' : 'Samples/symbol');
   set('ofdmNote', isOfdm ? r.ofdm.describe : ' ');
   set('pBand', `${(r.band[0]/1000).toFixed(1)} - ${(r.band[1]/1000).toFixed(1)} kHz`);
   set('pSps', r.sps);
@@ -214,6 +237,9 @@ function applyPreset() {
       fill($('symbolRate'), (META.symbol_rates[p.sample_rate] || []).map(v => ({value: v, text: v + ' Bd'})), p.symbol_rate);
     }
   }
+  // Cleared so the preset arrives at its own default carrier count rather than
+  // inheriting the last one's.
+  $('carriers').value = '';
   resolve();
 }
 
@@ -245,6 +271,9 @@ $('sampleRate').onchange = () => {
 };
 $('symbolRate').onchange = () => { deviate(); resolve(); };
 $('rolloff').onchange = () => { deviate(); resolve(); };
+// No deviate(): the carrier count is part of an OFDM profile, not a departure
+// from one, so the preset still names the link after it changes.
+$('carriers').onchange = () => resolve();
 
 // ---- monitoring ----------------------------------------------------------
 // Sent to the server rather than applied here: the audio is played by the
@@ -364,6 +393,7 @@ $('start').onclick = async () => {
   set('error','');
   const r = await control({cmd:'start',
     profile: $('preset').value,
+    carriers: +$('carriers').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,
     rolloff: +$('rolloff').value,

@@ -115,7 +115,17 @@ def run(profile_name: str, modcod_index: int, preset: str, snr: float | None,
     packets = []
     for r in locked:
         if r.payload is not None:
-            packets.extend(rx.push_frame(r.payload, r.header.il_phase, r.header.rs_phase))
+            # With the frame counter, exactly as rx.py feeds it. Leaving it off
+            # looked harmless and was not: without a counter the chain cannot
+            # measure a gap, so a single missed frame takes the resync path
+            # instead of the bridging one and throws away the several seconds
+            # of interleaver history that the deep interleaver exists to
+            # protect. On a channel that loses the odd frame that turned a
+            # recoverable gap into no audio at all, and made the tool report a
+            # failure the receiver itself does not have.
+            packets.extend(rx.push_frame(r.payload, r.header.il_phase,
+                                         r.header.rs_phase,
+                                         r.header.frame_count))
     got_audio = [pl for t, pl in packets if t == transport.PKT_AUDIO]
     got_pad = [pl for t, pl in packets if t == transport.PKT_PAD]
     # The receiver misses the first frame (interpolator warm-up) and one

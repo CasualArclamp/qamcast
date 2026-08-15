@@ -125,11 +125,23 @@ def modcod_codebook(length: int = HEADER_SYMBOLS) -> np.ndarray:
     return h[:MODCOD_CODEWORDS, :length] * prbs
 
 
-def encode_modcod(index: int) -> np.ndarray:
-    """The BPSK codeword announcing ``index``, as unit-energy symbols."""
+def encode_modcod(index: int, length: int = HEADER_SYMBOLS) -> np.ndarray:
+    """The BPSK codeword announcing ``index``, as unit-energy symbols.
+
+    ``length`` is fixed at HEADER_SYMBOLS on the single-carrier path, where the
+    codeword has a slot of its own. OFDM lays it across the subcarriers
+    instead, and a narrow geometry has fewer of those than 64, so it asks for
+    a shorter one -- see ofdm._modcod_length for which lengths keep the set
+    orthogonal.
+    """
     if not 0 <= index < MODCOD_CODEWORDS:
         raise ValueError(f"MODCOD index {index} outside 0..{MODCOD_CODEWORDS - 1}")
-    return modcod_codebook()[index].astype(np.complex128)
+    book = modcod_codebook(length)
+    if index >= len(book):
+        raise ValueError(
+            f"a {length}-symbol codeword carries only {len(book)} MODCODs"
+        )
+    return book[index].astype(np.complex128)
 
 
 def detect_modcod(symbols: np.ndarray) -> tuple[int, float]:

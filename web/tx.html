@@ -516,6 +516,18 @@ async function applyPreset() {
   if (released) set('pWarn', released);
 }
 
+// Presets filtered to the selected mode, so the list stays short and a mode
+// change cannot leave a profile of the wrong kind selected.
+function fillPresets(want) {
+  const list = META.profiles.filter(p => (p.mode || 'sc') === want);
+  fill($('preset'),
+       [{value:'CUSTOM', text:'Custom - set everything by hand'}]
+       .concat(list.map(p => ({value: p.name, text: p.label}))),
+       // The measured default when this mode has it, else the first listed.
+       list.some(p => p.name === META.default_profile) ? META.default_profile
+         : (list.length ? list[0].name : 'CUSTOM'));
+}
+
 control({cmd:'profiles'}).then(r => {
   META = r;
   fillPresets($('mode').value);
@@ -568,7 +580,6 @@ $('copyKey').onclick = async () => {
 };
 
 $('mode').onchange = () => {
-  if (typeof clearKey === 'function') clearKey('Mode changed');
   fillPresets($('mode').value);
   applyPreset();
 };

@@ -572,7 +572,11 @@ python tools/selftest.py OFDM48-32 32k opus
 
 `tools/conv_check.py` runs the Viterbi decoder against a plain textbook
 implementation over every rate and requires them to agree on every bit, and
-`tools/dfree.py` checks the code itself.
+`tools/dfree.py` checks the code itself. `tools/pagecheck.py` checks the two
+web pages statically — that every `$('id')` the script uses exists, that every
+function it calls is defined, and that the div tags balance. A page whose
+script throws during start-up does not look broken, it looks *empty*, and
+shipping exactly that is what the tool is for.
 
 ## Speed
 

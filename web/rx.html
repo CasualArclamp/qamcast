@@ -165,8 +165,6 @@
       Do not pick the same virtual cable for playback that you are listening
       on, or the decoded audio goes straight back into the modem's input.
     </div>
-
-  </div>
   </div>
 
   <!-- Error counters and the auto-probe: worth having, not worth a column
@@ -372,7 +370,7 @@ $('linkKey').onkeydown = e => { if (e.key === 'Enter') applyKey(); };
 // Every one of these overrides the key, so every one drops it. Silently
 // keeping it would mean the page showed a dial the receiver was not using.
 $('mode').onchange = () => {
-  if (typeof clearKey === 'function') clearKey('Mode changed');
+  clearKey('Mode changed');
   fillPresets($('mode').value);
   applyPreset();
 };

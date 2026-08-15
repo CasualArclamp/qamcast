@@ -227,12 +227,18 @@ class Profile:
     ofdm_bin_lo: int = 0
     ofdm_bin_hi: int = 0
     ofdm_symbols: int = 0     # data symbols per frame
-    # The single-carrier profile whose band this OFDM one fills. Kept because
-    # `band` reports the bins actually driven, which is narrower than the band
-    # they were fitted into -- re-fitting a different carrier count against
-    # that would walk the signal inwards a little more every time.
-    ofdm_base: str = ""
+    # The band this OFDM profile was fitted into, which is *not* the band it
+    # reports: `band` gives the bins actually driven, and those sit inside the
+    # target by up to a subcarrier. Re-fitting a different carrier count
+    # against the reported band would walk the signal inwards a little more
+    # every time, so the target is carried instead of recomputed.
+    ofdm_band_lo: float = 0.0
+    ofdm_band_hi: float = 0.0
     ofdm_cp_fraction: int = 0
+    # The single-carrier profile the target band came from. A label only --
+    # nothing reconstructs geometry from it, so a profile built from a link key
+    # can leave it empty.
+    ofdm_base: str = ""
 
     # ---- geometry -------------------------------------------------------
 
@@ -588,22 +594,56 @@ PROFILES.update({
 OFDM_CARRIER_CHOICES = (24, 32, 48, 64, 96, 128, 192, 256, 384)
 
 
-def _ofdm(name: str, base: str, carriers: int, cp_fraction: int,
-          description: str) -> Profile:
+OFDM_CP_CHOICES = (4, 8, 16, 32)
+
+
+def make_ofdm_profile(sample_rate: int, band_lo: float, band_hi: float,
+                      carriers: int, cp_fraction: int = 8,
+                      name: str = "CUSTOM", description: str = "",
+                      base: str = "", template: Profile | None = None) -> Profile:
+    """An OFDM profile from an explicit band, with no named base needed.
+
+    This is what a link key rebuilds into, so it must produce exactly what
+    ``_ofdm`` and ``with_carriers`` produce from the same band and count --
+    they all go through :func:`ofdm.for_carriers`, which is the single place
+    that turns a wanted carrier count into a geometry.
+
+    ``template`` supplies the single-carrier fields the OFDM path never reads
+    -- symbol rate, roll-off, carrier, frame length, pilot spacing. They exist
+    only because ``validate`` checks them, and every geometry question routes
+    through ``is_ofdm`` before it gets to them. Without a template they are
+    filled with values chosen to satisfy that check and nothing else.
+    """
     from .ofdm import for_carriers
 
+    geo = for_carriers(sample_rate, band_lo, band_hi, carriers, cp_fraction)
+    if template is not None:
+        sc = dict(symbol_rate=template.symbol_rate, rolloff=template.rolloff,
+                  carrier=template.carrier, frame_symbols=template.frame_symbols,
+                  pilot_spacing=template.pilot_spacing)
+    else:
+        sc = dict(symbol_rate=sample_rate // 4, rolloff=0.25,
+                  carrier=sample_rate / 4.0, frame_symbols=4096,
+                  pilot_spacing=64)
+    out = Profile(
+        name=name, sample_rate=sample_rate, description=description, **sc,
+        mode="ofdm", ofdm_fft=geo.fft, ofdm_cp=geo.cp,
+        ofdm_bin_lo=geo.bin_lo, ofdm_bin_hi=geo.bin_hi,
+        ofdm_symbols=geo.symbols_per_frame,
+        ofdm_band_lo=float(band_lo), ofdm_band_hi=float(band_hi),
+        ofdm_cp_fraction=cp_fraction, ofdm_base=base,
+    )
+    out.validate()
+    return out
+
+
+def _ofdm(name: str, base: str, carriers: int, cp_fraction: int,
+          description: str) -> Profile:
     src = PROFILES[base]
     lo, hi = src.band
-    geo = for_carriers(src.sample_rate, lo, hi, carriers, cp_fraction)
-    return Profile(
-        name=name, sample_rate=src.sample_rate, symbol_rate=src.symbol_rate,
-        rolloff=src.rolloff, carrier=src.carrier,
-        frame_symbols=src.frame_symbols, pilot_spacing=src.pilot_spacing,
-        description=description, mode="ofdm", ofdm_fft=geo.fft,
-        ofdm_cp=geo.cp, ofdm_bin_lo=geo.bin_lo, ofdm_bin_hi=geo.bin_hi,
-        ofdm_symbols=geo.symbols_per_frame, ofdm_base=base,
-        ofdm_cp_fraction=cp_fraction,
-    )
+    return make_ofdm_profile(src.sample_rate, lo, hi, carriers, cp_fraction,
+                             name=name, description=description, base=base,
+                             template=src)
 
 
 # The counts here are the defaults, not limits -- each of these profiles will
@@ -630,9 +670,9 @@ OFDM_DEFAULT_CARRIERS = {n: p.ofdm_carriers
 def with_carriers(profile: Profile, carriers: int | None) -> Profile:
     """The same profile re-fitted to a different number of subcarriers.
 
-    The band is taken from the single-carrier profile this one was fitted
-    into, not from what it currently occupies, so moving the dial back and
-    forth lands on the same geometry every time rather than creeping inwards.
+    The band is the one the profile was fitted into, not the one it currently
+    occupies, so moving the dial back and forth lands on the same geometry
+    every time rather than creeping inwards.
     """
     if not profile.is_ofdm or carriers is None:
         return profile
@@ -644,25 +684,12 @@ def with_carriers(profile: Profile, carriers: int | None) -> Profile:
             f"{carriers} subcarriers is not one of "
             f"{', '.join(str(c) for c in OFDM_CARRIER_CHOICES)}"
         )
-    from .ofdm import for_carriers
-
-    src = PROFILES[profile.ofdm_base]
-    lo, hi = src.band
-    geo = for_carriers(src.sample_rate, lo, hi, carriers,
-                       profile.ofdm_cp_fraction)
-    out = Profile(
-        name=f"{profile.family}-{carriers}",
-        sample_rate=profile.sample_rate, symbol_rate=profile.symbol_rate,
-        rolloff=profile.rolloff, carrier=profile.carrier,
-        frame_symbols=profile.frame_symbols,
-        pilot_spacing=profile.pilot_spacing,
-        description=profile.description, mode="ofdm", ofdm_fft=geo.fft,
-        ofdm_cp=geo.cp, ofdm_bin_lo=geo.bin_lo, ofdm_bin_hi=geo.bin_hi,
-        ofdm_symbols=geo.symbols_per_frame, ofdm_base=profile.ofdm_base,
-        ofdm_cp_fraction=profile.ofdm_cp_fraction,
+    return make_ofdm_profile(
+        profile.sample_rate, profile.ofdm_band_lo, profile.ofdm_band_hi,
+        carriers, profile.ofdm_cp_fraction,
+        name=f"{profile.family}-{carriers}", description=profile.description,
+        base=profile.ofdm_base, template=profile,
     )
-    out.validate()
-    return out
 
 ALIASES = {"WIDE96": "WIDE", "STANDARD": "WIDE48"}
 
@@ -750,6 +777,13 @@ def make_profile(sample_rate: int, symbol_rate: int, rolloff: float = 0.25,
     bandwidth = symbol_rate * (1.0 + rolloff)
     if carrier is None:
         carrier = bandwidth / 2.0 + max(400.0, sample_rate * 0.01)
+    # Whole hertz. The automatic placement lands on fractions -- 7882.875 Hz on
+    # a 44.1 kHz card -- and a fraction of a hertz is spurious precision on a
+    # carrier that the receiver estimates from the preamble anyway. It also has
+    # to survive a link key, which carries the carrier in whole hertz, and a
+    # carrier that changed by three hertz on the way through would make the two
+    # ends disagree about where the band is for no reason at all.
+    carrier = float(round(carrier))
     if pilot_spacing not in PILOT_CHOICES:
         raise ValueError(f"pilot spacing must be one of {PILOT_CHOICES}")
     if frame_symbols is None:
@@ -819,7 +853,8 @@ def symbol_rate_for_bitrate(sample_rate: int, bitrate: int, modcod: Modcod,
 
 def plan(sample_rate: int, symbol_rate: int, modcod: Modcod,
          rolloff: float = 0.25, pilot_spacing: int = 64,
-         carrier: float | None = None) -> dict:
+         carrier: float | None = None,
+         frame_symbols: int | None = None) -> dict:
     """Everything the UI shows for one combination of settings.
 
     ``carrier`` matters because it decides where the occupied band sits, and
@@ -827,9 +862,15 @@ def plan(sample_rate: int, symbol_rate: int, modcod: Modcod,
     choice here would draw a band the transmitter is not going to use -- on
     WIDE, 2.8 kHz below the real upper edge, which is exactly the margin the
     Nyquist warning exists to catch.
+
+    ``frame_symbols`` matters for the same reason and in the same direction:
+    RADIO, ACOUSTIC and their 44.1 kHz twins all set a frame length the
+    automatic choice would not pick, so planning without it reported a frame
+    half as long as the one actually transmitted -- and the interleaver depth
+    and acquisition time quoted beside it were wrong to match.
     """
     p = make_profile(sample_rate, symbol_rate, rolloff, carrier=carrier,
-                     pilot_spacing=pilot_spacing)
+                     pilot_spacing=pilot_spacing, frame_symbols=frame_symbols)
     cap = p.capacity(modcod)
     lo, hi = p.band
     return {

@@ -26,8 +26,8 @@ import wave
 
 import numpy as np
 
-from qamcore import (channel as CH, codec, framing, icy, modulator, ofdm,
-                     profiles, scope, streams, transport, webui)
+from qamcore import (channel as CH, codec, framing, icy, linkkey, modulator,
+                     ofdm, profiles, scope, streams, transport, webui)
 
 # Config and PAD are retransmitted this often. They cannot be sent once: a
 # receiver joining mid-broadcast has missed anything at the start, and so has
@@ -579,7 +579,15 @@ def _backlog_note(pending: int, dropped: int, spare: float,
 
 
 def build_profile(cfg: dict) -> profiles.Profile:
-    """A named preset, or one built from the explicit fields."""
+    """A link key, a named preset, or one built from the explicit fields."""
+    # A key wins outright when one is supplied. It describes the whole physical
+    # layer, and rebuilding from it directly is what makes copying one across
+    # exact rather than approximate -- the dials it fills in cannot express a
+    # carrier frequency or a pilot spacing, so a round trip through them would
+    # quietly drop both.
+    key = str(cfg.get("link_key") or "").strip()
+    if key:
+        return linkkey.to_profile(linkkey.decode(key))
     name = str(cfg.get("profile") or "WIDE").upper()
     if name != "CUSTOM":
         profile = profiles.get_profile(name)
@@ -713,6 +721,9 @@ def _solve_ofdm(profile: profiles.Profile, msg: dict) -> dict:
         "sample_rate": profile.sample_rate,
         "symbol_rate": int(round(geo.symbol_rate)),
         "symbol_rates": [int(round(geo.symbol_rate))],
+        # The geometry cannot travel in the header -- the preamble is built
+        # from it -- so it travels as a key the operator copies across.
+        "link_key": linkkey.encode(profile),
         "sps": geo.fft,
         "rolloff": profile.rolloff,
         "carrier": (lo + hi) / 2,
@@ -768,6 +779,24 @@ def solve(msg: dict) -> dict:
     the mismatch is reported rather than papered over by quietly overriding a
     lock -- a lock that gives way without saying so is worse than no lock.
     """
+    # A link key describes the physical layer outright, so when one is in force
+    # it replaces the page's dials rather than being reconciled with them. The
+    # dials cannot express a carrier frequency, a pilot spacing or a frame
+    # length at all, so solving from them would draw a panel describing a
+    # different link from the one Start is about to build.
+    key = str(msg.get("link_key") or "").strip()
+    if key:
+        try:
+            keyed = linkkey.to_profile(linkkey.decode(key))
+        except linkkey.LinkKeyError as exc:
+            return {"error": str(exc)}
+        if keyed.is_ofdm:
+            return _solve_ofdm(keyed, {**msg, "carriers": keyed.ofdm_carriers})
+        msg = {**msg, "profile": "CUSTOM", "sample_rate": keyed.sample_rate,
+               "symbol_rate": keyed.symbol_rate, "rolloff": keyed.rolloff,
+               "carrier": keyed.carrier, "pilot_spacing": keyed.pilot_spacing,
+               "frame_symbols": keyed.frame_symbols}
+
     # An OFDM profile is not a symbol rate and a roll-off, so none of the
     # solving below applies to it: the geometry is fixed by the profile and
     # the only free choice left is the MODCOD. Report it from the geometry
@@ -797,15 +826,24 @@ def solve(msg: dict) -> dict:
                 preset = profiles.get_profile(name)
             except (KeyError, ValueError):
                 preset = None
+        # Pinned by a link key when one is in force; otherwise the preset's, or
+        # the automatic choice.
+        frame_symbols = int(msg["frame_symbols"]) if msg.get("frame_symbols") else None
         if preset is not None:
             pilot = pilot or preset.pilot_spacing
             # Only while the page still describes that preset -- once the
             # symbol rate is edited the hand-placed carrier no longer centres
             # anything, and the automatic one is the honest answer.
+            #
+            # The frame length rides along for the same reason and is just as
+            # load-bearing: five of the seven presets set one that the
+            # automatic choice would not pick, so planning without it described
+            # a frame half the length of the one Start goes on to transmit.
             if (carrier is None
                     and preset.sample_rate == sample_rate
                     and preset.symbol_rate == int(msg.get("symbol_rate") or 0)):
                 carrier = preset.carrier
+                frame_symbols = preset.frame_symbols
         pilot = pilot or 64
         modcod = pick_modcod(msg, profiles.get_profile("WIDE48"), 0)
     except (KeyError, ValueError) as exc:
@@ -927,13 +965,25 @@ def solve(msg: dict) -> dict:
                         f"can carry at {sample_rate/1000:.1f} kHz; "
                         f"{int(reachable) // 1000} kbps is the most it will do.")
 
-    # Only keep the preset's hand-placed carrier if the solver left the symbol
-    # rate where the preset put it; if it moved, the band has moved too.
+    # Only keep the preset's hand-placed carrier and frame length if the solver
+    # left the symbol rate where the preset put it; if it moved, the page has
+    # deviated to Custom and Start will build the automatic ones.
     if carrier is not None and symbol_rate != int(msg.get("symbol_rate") or 0):
         carrier = None
-    out = profiles.plan(sample_rate, symbol_rate, modcod, rolloff, pilot, carrier)
+        if not msg.get("frame_symbols"):
+            frame_symbols = None
+    out = profiles.plan(sample_rate, symbol_rate, modcod, rolloff, pilot,
+                        carrier, frame_symbols)
     out["bitrate"] = max(0, bitrate)
     out["symbol_rates"] = rates
+    # Encoded from the profile the plan actually describes, not from the three
+    # fields on the page. The carrier, the pilot spacing and the frame length
+    # are settled here and are every bit as load-bearing as the symbol rate; a
+    # key without them names a link that only sometimes exists.
+    out["link_key"] = linkkey.encode(
+        profiles.make_profile(sample_rate, symbol_rate, rolloff,
+                              carrier=carrier, pilot_spacing=pilot,
+                              frame_symbols=frame_symbols))
     out["carries"] = bitrate <= ceiling
     out["locks"] = sorted(locks)
     out["moved"] = sorted(set(moved))

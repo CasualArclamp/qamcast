@@ -89,6 +89,16 @@
       none of them travel in the header. Modulation, code rate and codec do,
       so those configure themselves.
     </div>
+
+    <label>Link key</label>
+    <div style="display:flex;gap:6px;align-items:stretch">
+      <input id="linkKey" placeholder="QC1-..." spellcheck="false"
+             style="flex:1;min-width:0;font-family:inherit;letter-spacing:.05em">
+      <button id="applyKey" type="button" style="width:auto;white-space:nowrap">Apply</button>
+    </div>
+    <div class="note" id="keyNote">Paste the transmitter's key to set every dial
+      below at once.</div>
+
     <label>Preset</label>
     <select id="preset"></select>
 
@@ -188,6 +198,18 @@ function fill(sel, items, value) {
   if (value !== undefined && [...sel.options].some(o => o.value == value)) sel.value = value;
 }
 
+// Assigning a value a <select> does not have leaves it on "", which reads back
+// as 0 and gets silently replaced by a default further down. A link key can
+// name a card rate or a roll-off this page never listed, and it has to land.
+function setSelect(sel, value) {
+  if (![...sel.options].some(o => o.value == value)) {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = value;
+    sel.appendChild(o);
+  }
+  sel.value = value;
+}
+
 // The receiver has no bitrate or modulation to solve for -- it learns those
 // from the header. It still asks the server to work out the geometry so the
 // page can show where the signal should appear and warn about a symbol rate
@@ -196,6 +218,7 @@ async function resolve() {
   if (!META) return;
   const r = await control({
     cmd: 'solve', driver: 'symbol_rate', profile: $('preset').value,
+    link_key: KEY,
     carriers: +$('carriers').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,
@@ -209,6 +232,14 @@ async function resolve() {
   $('sampleRate').disabled = isOfdm || $('preset').value !== 'CUSTOM';
   $('carrierRow').style.display = isOfdm ? '' : 'none';
   ['rEcho', 'rOffset'].forEach(id => $(id).style.display = isOfdm ? '' : 'none');
+  // In OFDM the symbol rate is derived from the geometry, not chosen. The list
+  // built from META.symbol_rates is the single-carrier ladder and never
+  // contains the derived rate, so the disabled box used to sit on an unrelated
+  // number and read as a setting that had to be matched by hand.
+  fill($('symbolRate'), isOfdm
+       ? [{value: r.symbol_rate, text: r.symbol_rate + ' sym/s (from geometry)'}]
+       : (META.symbol_rates[$('sampleRate').value] || []).map(
+           v => ({value: v, text: v + ' Bd'})), r.symbol_rate);
   if (isOfdm) {
     fill($('carriers'), r.ofdm.carrier_choices.map(
            c => ({value: c, text: c + ' carriers'})), r.ofdm.carriers);
@@ -263,17 +294,68 @@ function deviate() {
   }
 }
 
-$('preset').onchange = applyPreset;
+// A key in force is the source of truth for the whole link, and it stays that
+// way until a dial is touched by hand. The dials cannot express a carrier
+// frequency, a pilot spacing or a frame length, so reading the settings back
+// out of them would quietly drop three of the things the key exists to carry.
+// The preset it matches is a label; when none matches, the dials read Custom
+// while the key underneath still describes the link exactly.
+let KEY = '';
+
+function clearKey(why) {
+  if (!KEY) return;
+  KEY = '';
+  $('keyNote').className = 'note';
+  set('keyNote', why + ' — the link key no longer applies. Paste it again to '
+      + 'go back to the transmitter’s settings.');
+}
+
+async function applyKey() {
+  const raw = $('linkKey').value.trim();
+  if (!raw) return;
+  const r = await control({cmd: 'linkkey', key: raw});
+  if (r.error) { set('keyNote', r.error); $('keyNote').className = 'note warn'; return; }
+  const L = r.link;
+  KEY = raw;
+  // An OFDM key labels itself with its carrier count -- OFDM48-24 -- and the
+  // dropdown lists the family. Fall back to the family so the box names
+  // something the operator recognises, with the count in its own control.
+  const has = n => n && [...$('preset').options].some(o => o.value === n);
+  $('preset').value = [L.profile, (L.profile || '').split('-')[0]]
+      .find(has) || 'CUSTOM';
+  const custom = $('preset').value === 'CUSTOM';
+  $('sampleRate').disabled = !custom;
+  $('rolloff').disabled = !custom;
+  setSelect($('sampleRate'), L.sample_rate);
+  if (L.carriers) {
+    fill($('carriers'), META.carrier_choices.map(
+           c => ({value: c, text: c + ' carriers'})), L.carriers);
+  } else {
+    setSelect($('rolloff'), L.rolloff);
+    fill($('symbolRate'), [{value: L.symbol_rate, text: L.symbol_rate + ' Bd'}],
+         L.symbol_rate);
+  }
+  $('keyNote').className = 'note';
+  set('keyNote', L.describe + ' — ' + (L.profile || 'not a preset'));
+  await resolve();
+}
+$('applyKey').onclick = applyKey;
+$('linkKey').onkeydown = e => { if (e.key === 'Enter') applyKey(); };
+
+// Every one of these overrides the key, so every one drops it. Silently
+// keeping it would mean the page showed a dial the receiver was not using.
+$('preset').onchange = () => { clearKey('Preset changed'); applyPreset(); };
 $('sampleRate').onchange = () => {
+  clearKey('Card rate changed');
   deviate();
   fill($('symbolRate'), (META.symbol_rates[$('sampleRate').value] || []).map(v => ({value: v, text: v + ' Bd'})));
   resolve();
 };
-$('symbolRate').onchange = () => { deviate(); resolve(); };
-$('rolloff').onchange = () => { deviate(); resolve(); };
+$('symbolRate').onchange = () => { clearKey('Symbol rate changed'); deviate(); resolve(); };
+$('rolloff').onchange = () => { clearKey('Roll-off changed'); deviate(); resolve(); };
 // No deviate(): the carrier count is part of an OFDM profile, not a departure
 // from one, so the preset still names the link after it changes.
-$('carriers').onchange = () => resolve();
+$('carriers').onchange = () => { clearKey('Subcarrier count changed'); resolve(); };
 
 // ---- monitoring ----------------------------------------------------------
 // Sent to the server rather than applied here: the audio is played by the
@@ -393,6 +475,7 @@ $('start').onclick = async () => {
   set('error','');
   const r = await control({cmd:'start',
     profile: $('preset').value,
+    link_key: KEY,
     carriers: +$('carriers').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,

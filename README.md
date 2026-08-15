@@ -96,6 +96,66 @@ number, so the card's rate factorises the options (48000/16000 = 3,
 python tools/rates.py WIDE
 ```
 
+## Link keys
+
+Card rate, symbol rate, roll-off, carrier frequency, pilot spacing, frame
+length and — in OFDM — the subcarrier count cannot travel in the header. The
+frame is
+
+```
+[ preamble ][ MODCOD codeword ][ data ]
+```
+
+and the preamble is a Zadoff-Chu symbol built *from* the geometry, so the
+correlator has to know the transform size and prefix before it can find the
+preamble at all. Nothing sent after the preamble — the MODCOD codeword
+included — can tell a receiver how to hear the preamble. Only the payload
+description configures itself in band.
+
+A **link key** carries that geometry out of band instead. The transmit panel
+shows one; paste it into the receiver's Link key box and press Apply, and every
+dial follows:
+
+```
+QC2-402Y00C04NC1P6FR    48 kHz card · 9600 Bd · roll-off 0.25 · carrier 7 kHz
+QC2-448E00C40E24W00B    48 kHz card · OFDM 24 carriers · 0.9-20.1 kHz
+```
+
+Sixteen Crockford base32 characters over a 10-byte record. Crockford leaves out
+I, L, O and U, so a key survives being read aloud or written down, and decoding
+ignores case, dashes and spaces. The CRC-8 rejects every single-character typo
+tried; the receiver shows what it decoded before it moves anything, because a
+key that got through and tuned the link somewhere wrong in silence is worse
+than one that is refused.
+
+**The key describes the link, not a preset**, and that distinction is the whole
+design. A key naming only the card rate, symbol rate and roll-off looks
+sufficient and is not — those three do not determine the carrier, the pilot
+spacing or the frame length, and the presets disagree on all three. Five of the
+seven set a frame length the automatic choice would not pick, and every one
+places its carrier by hand. Rebuilding by searching the profile table for a
+match then produces a *plausible* link rather than the right one: a hand-dialled
+48 kHz / 9600 Bd / 0.25 link matched RADIO on all three fields and came back
+tuned 1000–13000 Hz instead of 480–12480, with twice the frame. It never locks
+and nothing says why. So the key carries every field the geometry needs, the
+preset it happens to match is shown as a label, and a key that matches nothing
+is a Custom link that still works exactly.
+
+A key stays in force at the receiver until a dial is touched by hand, at which
+point it is dropped and says so — the dials cannot express a carrier frequency
+or a pilot spacing, so reading the settings back out of them would silently
+discard three of the things the key exists to carry.
+
+`tools/linkkey_check.py` covers the format — round trip, typos, formatting,
+and that no custom link ever borrows a preset's name. `tools/linkkey_roundtrip.py`
+covers the thing that actually matters: that a key copied across gives the
+receiver the same physical layer the transmitter is using, over all 43
+profile-and-carrier combinations and five hand-dialled links.
+
+In OFDM the receiver's symbol rate is derived from the geometry, not chosen —
+it is disabled and shows `14080 sym/s (from geometry)`. It is not a dial to
+match by hand, and it will not appear in the single-carrier symbol rate ladder.
+
 ## Setting the link
 
 Symbol rate, MODCOD and bitrate are three views of one number:
@@ -497,6 +557,7 @@ qamcore/            the wire format — one copy, both ends
   streams.py        .pls/.m3u playlists folded into stations and their rates
   icy.py            Icecast/Shoutcast now-playing metadata
   ofdm.py           OFDM: geometry, modulator, demodulator, coded frames
+  linkkey.py        the physical layer as one copyable token
   ogg.py            Ogg pages, so Opus packets can be carried bare
   scope.py          telemetry for the spectrum and constellation displays
   webui.py          local UI: static files, SSE telemetry, JSON control

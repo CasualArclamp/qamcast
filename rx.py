@@ -26,8 +26,8 @@ import wave
 
 import numpy as np
 
-from qamcore import (codec, demodulator, framing, ofdm, profiles, scope,
-                     transport, webui)
+from qamcore import (codec, demodulator, framing, linkkey, ofdm, profiles,
+                     scope, transport, webui)
 
 # Before anything is decoded the constellation is unknown, so start at the
 # floor; scope.symbol_budget raises it once the MODCOD arrives.
@@ -158,6 +158,8 @@ class Receiver:
         if cmd == "solve":
             from tx import solve
             return solve(msg)
+        if cmd == "linkkey":
+            return self.read_link_key(msg)
         if cmd == "devices":
             from tx import list_devices
             every = bool(msg.get("all"))
@@ -166,6 +168,22 @@ class Receiver:
         if cmd in ("volume", "pause"):
             return self.set_monitoring(msg)
         return {"error": f"unknown command {cmd!r}"}
+
+    def read_link_key(self, msg: dict) -> dict:
+        """Turn a pasted key into the dial settings, without applying them.
+
+        The page shows what it decoded before anything moves: an 8-bit
+        checksum catches essentially every mistyped key, but not quite all of
+        them, and a link tuned somewhere wrong in silence is worse than one
+        that never starts.
+        """
+        try:
+            info = linkkey.decode(str(msg.get("key") or ""))
+        except linkkey.LinkKeyError as exc:
+            return {"error": str(exc)}
+        info["describe"] = linkkey.describe(info)
+        info["profile"] = linkkey.profile_name(info)
+        return {"ok": True, "link": info}
 
     def set_monitoring(self, msg: dict) -> dict:
         """Speaker volume and pause. Held here as well as pushed at the

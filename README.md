@@ -434,6 +434,38 @@ of them:
 python tools/selftest.py OFDM48-32 32k opus
 ```
 
+`tools/conv_check.py` runs the Viterbi decoder against a plain textbook
+implementation over every rate and requires them to agree on every bit, and
+`tools/dfree.py` checks the code itself.
+
+## Speed
+
+The receive path — demodulate, Viterbi, Reed-Solomon, deinterleave, transport
+— fed in soundcard-sized blocks with no audio hardware involved:
+
+| Profile | Real time | One core |
+|---|---|---|
+| `WIDE` (96 kHz, 32 kBd) | 72× | 1.4% |
+| `WIDE48` | 153× | 0.7% |
+| `RADIO` | 210× | 0.5% |
+| `OFDM96` | 146× | 0.7% |
+| `OFDM48` | 254× | 0.4% |
+| `OFDMRADIO` | 253× | 0.4% |
+
+That is 2.3–3.2× quicker than it was, and the narrow OFDM geometries are 7.8×
+quicker, which was the outlier worth chasing: `OFDM48` at 24 carriers has 145
+data symbols in a frame where 384 carriers has 12, and a per-symbol Python loop
+made the cheapest geometry the most expensive thing in the receiver. Batched
+across symbols, its cost tracks its carrier count.
+
+The rest came from four places, all of them arithmetic that was being done the
+long way rather than anything structural: the Viterbi butterfly (see conv.py —
+4.2× on its own, and bit-identical), syndrome evaluation against a constant
+(9.5×), a 16-tap interpolation that was building three megabytes of temporaries
+per frame, and a Forney interleaver expressed as 255 branch queues when it is
+really one gather. Nothing about the wire format changed; every loopback and
+the full carrier matrix produce identical EVM figures to the tenth of a dB.
+
 ## Licence
 
 MIT — use it for anything, including commercially, as long as the copyright
@@ -471,5 +503,5 @@ qamcore/            the wire format — one copy, both ends
 tx.py               transmitter
 rx.py               receiver
 web/                the two pages, styling, scopes
-tools/              selftest, loopback, rate card, threshold measurement
+tools/              selftest, loopback, rate card, thresholds, decoder check
 ```

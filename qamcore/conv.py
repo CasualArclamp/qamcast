@@ -94,26 +94,44 @@ def _trellis() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return out_x, out_y, nxt
 
 
-@functools.lru_cache(maxsize=None)
-def _predecessors() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """For each state s', its two predecessors and the outputs on those edges.
+HALF = STATES // 2
 
-    ``s'`` top bit is the input that caused the transition, and its remaining
-    bits are the predecessor's upper bits -- so the two predecessors differ
-    only in the bit that just fell off the bottom.
+
+@functools.lru_cache(maxsize=None)
+def _predecessors() -> tuple[np.ndarray, np.ndarray]:
+    """``(prev, bidx)`` for the traceback and the butterfly loop.
+
+    ``prev[s', j]`` is the j-th predecessor of s'. Its top bit is the input that
+    caused the transition and its remaining bits are the predecessor's upper
+    bits, so the two predecessors differ only in the bit that just fell off the
+    bottom: they are always ``2m`` and ``2m+1`` for ``m = s' mod 32``.
+
+    ``bidx[m, j]`` is not the output bits but an index into the four possible
+    branch metrics, ordered ``2*x + y``, for the *lower* half of the states
+    only. That is all the decoder needs, because states m and m+32 share both
+    predecessors and their edges carry complementary output bits -- so their
+    branch metrics are the same two numbers negated. Both halves of a butterfly
+    come out of one pair of table lookups.
+
+    That complement holds because both generator polynomials include the
+    newest input bit, and it is checked below rather than assumed: a
+    polynomial without that bit set would leave the decoder quietly computing
+    the wrong metric for half the trellis.
     """
     out_x, out_y, _ = _trellis()
     prev = np.zeros((STATES, 2), dtype=np.int64)
-    px = np.zeros((STATES, 2), dtype=np.int8)
-    py = np.zeros((STATES, 2), dtype=np.int8)
+    full = np.zeros((STATES, 2), dtype=np.int64)
     for sp in range(STATES):
         b = sp >> TOP
         for j in (0, 1):
             p = ((sp & STATE_MASK) << 1) | j
             prev[sp, j] = p
-            px[sp, j] = out_x[p, b]
-            py[sp, j] = out_y[p, b]
-    return prev, px, py
+            full[sp, j] = 2 * int(out_x[p, b]) + int(out_y[p, b])
+    if not (G1 >> (K - 1)) & 1 or not (G2 >> (K - 1)) & 1:
+        raise ValueError("both generators must include the newest input bit")
+    if not np.array_equal(full[HALF:], 3 - full[:HALF]):
+        raise ValueError("trellis is not antipodal; the butterfly loop is invalid")
+    return prev, np.ascontiguousarray(full[:HALF])
 
 
 # --------------------------------------------------------------------------
@@ -215,41 +233,92 @@ def max_info_bits(channel_bits: int, num: int, den: int) -> int:
 # --------------------------------------------------------------------------
 # Soft-decision Viterbi
 # --------------------------------------------------------------------------
+#
+# This is the single most expensive thing the receiver does -- 40% of the whole
+# receive path on WIDE, where a frame is 24003 trellis steps of 64 states. Three
+# things make it cheaper without changing a single output bit:
+#
+# **Four branch metrics, not 128.** The mother code emits two bits per edge, so
+# a branch metric is one of +-lx +- ly and there are exactly four of them per
+# step. The obvious loop recomputes (1-2*px)*lx + (1-2*py)*ly for all 64 states
+# and both branches, which is 128 evaluations of four distinct values. Computed
+# once into a table and indexed by 2*px+py instead.
+#
+# **One machine word of decisions per step, not 64 bytes.** The traceback needs
+# one bit per state, and storing it as a byte per state made the array 1.5 MB
+# for a WIDE frame -- far past any cache, and written straight through once per
+# step. Packed into a bit per state it is 192 KB and stays resident.
+#
+# **Renormalise occasionally.** Subtracting the running maximum every step
+# costs a whole extra pass over the states to save a range that float64 has in
+# abundance. Every 64 steps is just as safe: the metrics stay within about
+# 2^6 * max|llr| of each other, which leaves a float64 mantissa 46 spare bits of
+# resolution on the differences that actually decide anything.
+#
+# Measured together: 2.6x faster, and bit-identical over 400 randomised frames
+# across all six rates -- see tools/conv_check.py.
+
+RENORM_EVERY = 64
+
 
 @njit(cache=True)
-def _viterbi(llr, prev, px, py, n_steps, terminated):
+def _viterbi(llr, prev, bidx, n_steps, terminated):
     NEG = -1e18
     pm = np.full(STATES, NEG, dtype=np.float64)
     pm[0] = 0.0
-    dec = np.empty((n_steps, STATES), dtype=np.uint8)
-    nm = np.empty(STATES, dtype=np.float64)
+    nm = np.full(STATES, NEG, dtype=np.float64)
+    # One bit per state. Signed because numba types a Python integer literal as
+    # int64; bit 63 makes it negative, which the masked shift in the traceback
+    # reads back correctly regardless.
+    dec = np.empty(n_steps, dtype=np.int64)
+    bmv = np.empty(4, dtype=np.float64)
 
     for t in range(n_steps):
+        # LLR convention: positive means bit 0, so a bit expected to be 0
+        # contributes +llr and a bit expected to be 1 contributes -llr.
         lx = llr[2 * t]
         ly = llr[2 * t + 1]
-        for sp in range(STATES):
-            best = NEG
-            bestj = 0
-            for j in range(2):
-                p = prev[sp, j]
-                # LLR convention: positive means bit 0, so a bit expected to be
-                # 0 contributes +llr and a bit expected to be 1 contributes -llr.
-                bm = (1.0 - 2.0 * px[sp, j]) * lx + (1.0 - 2.0 * py[sp, j]) * ly
-                cand = pm[p] + bm
-                if cand > best:
-                    best = cand
-                    bestj = j
-            nm[sp] = best
-            dec[t, sp] = bestj
-        for i in range(STATES):
-            pm[i] = nm[i]
-        # Renormalise to stop the metrics running away over a long frame.
-        m = pm[0]
-        for i in range(1, STATES):
-            if pm[i] > m:
-                m = pm[i]
-        for i in range(STATES):
-            pm[i] -= m
+        bmv[0] = lx + ly
+        bmv[1] = lx - ly
+        bmv[2] = -lx + ly
+        bmv[3] = -lx - ly
+
+        lo = 0
+        hi = 0
+        for m in range(HALF):
+            # One butterfly: states m and m+32 read the same two predecessors,
+            # 2m and 2m+1, and their edges carry opposite output bits -- so the
+            # upper state's metrics are the lower state's negated, and one pair
+            # of table lookups serves both.
+            p0 = pm[2 * m]
+            p1 = pm[2 * m + 1]
+            g0 = bmv[bidx[m, 0]]
+            g1 = bmv[bidx[m, 1]]
+            # Written as selects rather than as `if: ... else: ...` around both
+            # assignments, which reads more naturally and is 5x slower. Folding
+            # the decision bit into the branch stops the compiler emitting a
+            # conditional move for the metric, because the two arms no longer
+            # differ only in a value -- and a mispredicted branch per state per
+            # step is the whole trellis. Strictly greater, so a tie keeps
+            # branch 0, the same choice a first-past-the-post loop makes.
+            a = p0 + g0
+            b = p1 + g1
+            nm[m] = b if b > a else a
+            lo |= (1 if b > a else 0) << m
+            c = p0 - g0
+            d = p1 - g1
+            nm[m + HALF] = d if d > c else c
+            hi |= (1 if d > c else 0) << m
+        dec[t] = lo | (hi << HALF)
+        pm, nm = nm, pm
+
+        if t % RENORM_EVERY == RENORM_EVERY - 1:
+            m = pm[0]
+            for i in range(1, STATES):
+                if pm[i] > m:
+                    m = pm[i]
+            for i in range(STATES):
+                pm[i] -= m
 
     if terminated:
         s = 0
@@ -264,7 +333,7 @@ def _viterbi(llr, prev, px, py, n_steps, terminated):
     out = np.empty(n_steps, dtype=np.uint8)
     for t in range(n_steps - 1, -1, -1):
         out[t] = s >> (K - 2)   # newest bit lives in the top of the state
-        j = dec[t, s]
+        j = (dec[t] >> s) & 1
         s = prev[s, j]
     return out
 
@@ -283,6 +352,6 @@ def decode(llr: np.ndarray, num: int, den: int, info_bits: int) -> np.ndarray:
         raise ValueError(
             f"need {need} mother LLRs for {info_bits} info bits, got {len(mother)}"
         )
-    prev, px, py = _predecessors()
-    bits = _viterbi(mother[:need], prev, px, py, n_steps, True)
+    prev, bidx = _predecessors()
+    bits = _viterbi(mother[:need], prev, bidx, n_steps, True)
     return bits[:info_bits]

@@ -372,16 +372,29 @@ def _from_time(block: np.ndarray, geo: OfdmGeometry) -> np.ndarray:
 # Modulator
 # --------------------------------------------------------------------------
 
-def _pilot_values(geo: OfdmGeometry, index: int) -> np.ndarray:
-    """References carried on the pilot subcarriers of data symbol ``index``.
+@functools.lru_cache(maxsize=None)
+def _pilot_matrix(geo: OfdmGeometry) -> np.ndarray:
+    """Every data symbol's pilot references at once, shape (symbols, pilots).
 
     Drawn from the same Zadoff-Chu sequence as the preamble, rotated per
     symbol so a run of data symbols never puts an identical waveform on the
     wire twice -- repeated symbols would add coherently and put a line in the
     spectrum.
+
+    Built whole and cached rather than one row at a time. It depends on nothing
+    but the geometry, and both ends were rebuilding a row per symbol -- 5655
+    identical rotations per second of audio on the narrow geometries.
     """
     ref = reference(len(geo.pilot_bins), seed=1)
-    return ref * np.exp(2j * np.pi * (index + 1) * np.arange(len(ref)) / len(ref))
+    n = len(ref)
+    k = np.arange(n)
+    turns = np.arange(1, geo.symbols_per_frame + 1)[:, None] * k[None, :] / n
+    return ref[None, :] * np.exp(2j * np.pi * turns)
+
+
+def _pilot_values(geo: OfdmGeometry, index: int) -> np.ndarray:
+    """References carried on the pilot subcarriers of data symbol ``index``."""
+    return _pilot_matrix(geo)[index]
 
 
 def _modcod_length(carriers: int) -> int:
@@ -744,26 +757,35 @@ class Demodulator:
 
         pilot_at = geo.pilot_bins - geo.bin_lo
         data_at = geo.data_bins - geo.bin_lo
-        payload = np.empty((geo.symbols_per_frame, geo.data_carriers), complex)
-        common = np.empty(geo.symbols_per_frame)
-        for i in range(geo.symbols_per_frame):
-            eq = _from_time(sym[i + 2], geo)[bins] / chan
-            # Residual phase drift since the preamble, from the pilots. A
-            # rotation common to every subcarrier is what a small timing or
-            # frequency error looks like here.
-            err = eq[pilot_at] * np.conj(_pilot_values(geo, i))
-            # Fit phase against subcarrier, not just an average of it. A
-            # carrier offset rotates every subcarrier equally, but a sampling
-            # clock offset -- a different fault, and one a soundcard always
-            # has -- tilts the phase across frequency instead. Averaging sees
-            # the tilt as nothing at all and leaves the band edges rotated,
-            # which is where the errors then appear.
-            ph = np.unwrap(np.angle(err))
-            slope_f, intercept = np.polyfit(pilot_at, ph, 1)
-            common[i] = intercept
-            fix = np.exp(-1j * (slope_f * np.arange(geo.carriers) + intercept))
-            payload[i] = (eq * fix)[data_at]
-        result.symbols = payload.ravel()
+
+        # Every data symbol at once, rather than a pass per symbol. The maths
+        # is unchanged -- rfft, unwrap and polyfit all take an axis and do the
+        # same arithmetic per row -- but the per-symbol overhead is not. A
+        # 24-carrier geometry has 145 data symbols in a frame where a
+        # 384-carrier one has 12, and paying numpy's dispatch cost 145 times a
+        # frame made the narrowest geometry the slowest thing in the receiver
+        # by a factor of three. Batched, its cost tracks its carrier count the
+        # way it should.
+        eq = np.fft.rfft(sym[2:, geo.cp:geo.cp + geo.fft], axis=1)[:, bins] / chan
+
+        # Residual phase drift since the preamble, from the pilots. A rotation
+        # common to every subcarrier is what a small timing or frequency error
+        # looks like here.
+        err = eq[:, pilot_at] * np.conj(_pilot_matrix(geo))
+        # Fit phase against subcarrier, not just an average of it. A carrier
+        # offset rotates every subcarrier equally, but a sampling clock offset
+        # -- a different fault, and one a soundcard always has -- tilts the
+        # phase across frequency instead. Averaging sees the tilt as nothing at
+        # all and leaves the band edges rotated, which is where the errors then
+        # appear.
+        ph = np.unwrap(np.angle(err), axis=1)
+        # polyfit takes a column per fit, so this is one least-squares solve
+        # with symbols_per_frame right-hand sides instead of that many solves.
+        slope_f, intercept = np.polyfit(pilot_at, ph.T, 1)
+        common = intercept
+        fix = np.exp(-1j * (slope_f[:, None] * np.arange(geo.carriers)[None, :]
+                            + intercept[:, None]))
+        result.symbols = (eq * fix)[:, data_at].ravel()
 
         # That common phase advances linearly with symbol index when there is
         # a frequency offset, so its slope measures the offset directly. Fed

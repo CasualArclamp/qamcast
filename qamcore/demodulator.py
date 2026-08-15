@@ -167,7 +167,10 @@ class Demodulator:
         n = len(x)
         ph = self._phase + self._dphase * np.arange(n)
         self._phase = float((self._phase + self._dphase * n) % (2.0 * np.pi))
-        return x * np.exp(-1j * ph)
+        # cos and sin rather than exp of an imaginary argument, which is the
+        # same two transcendentals plus a complex exponential's worth of
+        # machinery around them for a real part that is always exactly one.
+        return x * (np.cos(ph) - 1j * np.sin(ph))
 
     def feed(self, samples: np.ndarray) -> None:
         """Append passband samples. Cheap; do the work in :meth:`frames`."""
@@ -191,11 +194,21 @@ class Demodulator:
         energy gives a figure of merit that means the same thing regardless of
         window width, signal level or AGC state.
         """
-        if len(region) < self._ref_len:
+        n = self._ref_len
+        if len(region) < n:
             return np.zeros(0)
         raw = np.convolve(region, self._ref, mode="valid")
-        power = np.convolve(np.abs(region) ** 2,
-                            np.ones(self._ref_len), mode="valid")
+        # Sliding energy from prefix sums, not a second convolution. The kernel
+        # there is all ones, so the convolution was computing a running total
+        # the long way round -- len(region) * n multiply-accumulates for a
+        # quantity that two subtractions per output give exactly. On a WIDE
+        # acquisition scan that kernel is 200 long, so it was 200x the
+        # arithmetic for the same numbers.
+        energy = region.real ** 2 + region.imag ** 2
+        run = np.empty(len(region) + 1)
+        run[0] = 0.0
+        np.cumsum(energy, out=run[1:])
+        power = run[n:] - run[:-n]
         return raw / np.sqrt(np.maximum(power, 1e-20))
 
     @staticmethod
@@ -367,9 +380,18 @@ class Demodulator:
         """Demodulate whatever complete frames are buffered."""
         out: list[FrameResult] = []
         nominal = self.profile.frame_symbols * self.sps
+        # Wide enough to absorb any plausible clock error over one frame.
+        slack = max(self.sps * 4, int(nominal * 2e-3))
 
         while True:
             if self._prev_sync is None:
+                # Acquisition needs a *pair* of peaks a frame apart, so it
+                # cannot possibly succeed until that much is buffered -- and
+                # this runs on every feed, each one re-correlating the whole
+                # buffer from scratch. Without the guard a 96 kHz card spent a
+                # dozen full-buffer scans proving it could not yet know.
+                if len(self._buf) < nominal + slack + self._ref_len:
+                    break
                 found = self._find_sync(self._buf_start,
                                         self._buf_start + len(self._buf),
                                         first=True)
@@ -379,10 +401,8 @@ class Demodulator:
                 self._prev_sync, _ = found
                 continue
 
-            # The next preamble sits about one frame on; search a window wide
-            # enough to absorb any plausible clock error.
+            # The next preamble sits about one frame on.
             guess = self._prev_sync + nominal
-            slack = max(self.sps * 4, int(nominal * 2e-3))
             if self._buf_start + len(self._buf) < guess + slack + self._ref_len:
                 break
             found = self._find_sync(int(guess - slack), int(guess + slack))

@@ -11,6 +11,7 @@ that is nearly right and never quite locks.
 from __future__ import annotations
 
 import numpy as np
+from numba import njit
 
 # Filter length in symbols each side of centre. Set by the top of the ladder,
 # not the bottom: 256QAM at alpha=0.2 has half-decision-distance 0.077 in
@@ -128,20 +129,41 @@ class StreamShaper:
         return out
 
 
+@njit(cache=True)
+def _fir(x, h, out):
+    """Complex signal, real taps, overlap-add output. Accumulates into ``out``.
+
+    Written out rather than left to np.convolve because the taps are real and
+    the signal is not: numpy promotes the shorter operand and does four real
+    multiplies per tap where two will do. This runs on every sample the
+    receiver ever sees, at the card rate, so the factor is worth having.
+    """
+    k = len(h)
+    for i in range(len(x)):
+        xr = x[i].real
+        xi = x[i].imag
+        for j in range(k):
+            hj = h[j]
+            out[i + j] += complex(xr * hj, xi * hj)
+    return out
+
+
 class StreamMatched:
     """Matched filter with state, for the receiver's continuous input."""
 
     def __init__(self, sps: int, alpha: float, span: int = DEFAULT_SPAN):
-        self.h = design(sps, alpha, span)
+        self.h = np.ascontiguousarray(design(sps, alpha, span))
         self.delay = (len(self.h) - 1) // 2
         self._tail = np.zeros(len(self.h) - 1, dtype=np.complex128)
         self._primed = False
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        full = np.convolve(samples, self.h, mode="full")
-        full[:len(self._tail)] += self._tail
-        self._tail = full[len(samples):].copy()
-        out = full[:len(samples)]
+        n = len(samples)
+        full = np.zeros(n + len(self.h) - 1, dtype=np.complex128)
+        full[:len(self._tail)] = self._tail
+        _fir(np.ascontiguousarray(samples), self.h, full)
+        self._tail = full[n:].copy()
+        out = full[:n]
         if not self._primed:
             self._primed = True
             out = out[self.delay:]

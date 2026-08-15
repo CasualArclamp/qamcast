@@ -104,14 +104,40 @@ def encode(message: np.ndarray, k: int) -> np.ndarray:
     return np.concatenate([message, par.astype(np.uint8)])
 
 
+@functools.lru_cache(maxsize=None)
+def _syndrome_tables(nparity: int) -> np.ndarray:
+    """Multiply-by-alpha^(j+FCR) as a lookup, one row per syndrome.
+
+    The syndromes are the codeword evaluated at ``nparity`` fixed points, and
+    each evaluation is a Horner chain whose multiplier never changes. A general
+    GF multiply costs two log lookups, an add, an exp lookup and two branches
+    for the zero cases; against a *constant* it is one lookup, and the constant
+    is known before any data arrives.
+    """
+    exp, log = _tables()
+    tab = np.zeros((nparity, 256), dtype=np.int64)
+    for j in range(nparity):
+        a = exp[j + FCR]                 # a power of alpha, never zero
+        for s in range(1, 256):
+            tab[j, s] = exp[log[s] + log[a]]
+    return tab
+
+
 @njit(cache=True)
-def _syndromes(r, nparity, exp, log):
+def _syndromes(r, nparity, tab):
+    """Horner evaluation at each syndrome point.
+
+    This is the whole cost of decoding an undamaged codeword -- the common
+    case by a wide margin, since it runs on every codeword and most of them are
+    clean -- so it is worth having the inner step be a load and an xor and
+    nothing else.
+    """
     syn = np.zeros(nparity, dtype=np.int64)
     for j in range(nparity):
-        a = exp[j + FCR]
+        row = tab[j]
         s = 0
         for i in range(r.shape[0]):
-            s = _mul(s, a, exp, log) ^ r[i]
+            s = row[s] ^ r[i]
         syn[j] = s
     return syn
 
@@ -152,10 +178,10 @@ def _berlekamp_massey(syn, nparity, exp, log):
 
 
 @njit(cache=True)
-def _decode(r, nparity, exp, log):
+def _decode(r, nparity, exp, log, tab):
     """Returns (corrected, n_errors). n_errors is -1 if uncorrectable."""
     n = r.shape[0]
-    syn = _syndromes(r, nparity, exp, log)
+    syn = _syndromes(r, nparity, tab)
 
     clean = True
     for j in range(nparity):
@@ -224,7 +250,7 @@ def _decode(r, nparity, exp, log):
     # Verify: a corrected codeword must have zero syndromes. Without this a
     # codeword with more than t errors can decode to a plausible-looking wrong
     # answer, and silently wrong audio is worse than a muted frame.
-    check = _syndromes(out, nparity, exp, log)
+    check = _syndromes(out, nparity, tab)
     for j in range(nparity):
         if check[j] != 0:
             return r, -1
@@ -243,7 +269,8 @@ def decode(codeword: np.ndarray, k: int) -> tuple[np.ndarray, int]:
         raise ValueError(f"expected {N} codeword bytes, got {len(codeword)}")
     nparity = N - k
     exp, log = _tables()
-    out, nerr = _decode(codeword.astype(np.int64), nparity, exp, log)
+    out, nerr = _decode(codeword.astype(np.int64), nparity, exp, log,
+                        _syndrome_tables(nparity))
     return out[:k].astype(np.uint8), int(nerr)
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import functools
 
 import numpy as np
+from numba import njit
 
 TAPS = 16
 PHASES = 512
@@ -39,12 +40,31 @@ def bank() -> np.ndarray:
     return b / b.sum(axis=1, keepdims=True)
 
 
+@njit(cache=True)
+def _apply(x, base, phase, taps, out):
+    """Sixteen-tap dot product per output, straight out of the buffer."""
+    for i in range(len(base)):
+        s = base[i] - LEFT
+        p = phase[i]
+        acc = out[i]        # zero, and already the right type for x
+        for t in range(TAPS):
+            acc += taps[p, t] * x[s + t]
+        out[i] = acc
+    return out
+
+
 def sample_at(x: np.ndarray, idx: np.ndarray) -> np.ndarray:
     """Interpolate ``x`` at fractional positions ``idx``.
 
     Caller guarantees ``idx`` stays within ``[LEFT, len(x) - RIGHT)``; this
     raises rather than clipping, because silently sampling off the end of a
     buffer produces a plausible-looking constellation with a hole in it.
+
+    The arithmetic is one 16-tap dot product per output and nothing else. The
+    obvious vectorisation -- gather the taps for every phase, gather a 16-wide
+    window for every position, then einsum the two -- builds three megabytes of
+    temporaries per WIDE frame to perform 131072 multiply-accumulates, and
+    spends its time moving them rather than doing them.
     """
     idx = np.asarray(idx, dtype=np.float64)
     base = np.floor(idx).astype(np.int64)
@@ -52,6 +72,7 @@ def sample_at(x: np.ndarray, idx: np.ndarray) -> np.ndarray:
     if len(base) and (base[0] - LEFT < 0 or base[-1] + RIGHT >= len(x)):
         raise IndexError("interpolation window outside buffer")
     phase = np.minimum((frac * PHASES).astype(np.int64), PHASES - 1)
-    taps = bank()[phase]
-    gather = x[base[:, None] + np.arange(-LEFT, RIGHT + 1)[None, :]]
-    return np.einsum("ij,ij->i", taps, gather)
+    out = np.zeros(len(base), dtype=np.result_type(x.dtype, np.float64))
+    if not len(base):
+        return out
+    return _apply(np.ascontiguousarray(x), base, phase, bank(), out)

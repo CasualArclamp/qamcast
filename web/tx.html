@@ -316,6 +316,26 @@
         <button id="applyChan" style="margin:0">Apply</button>
       </div>
     </div>
+
+    <label style="display:inline;margin-top:12px">
+      <input type="checkbox" id="scramble" style="width:auto" checked>
+      energy dispersal &mdash; scramble the payload
+    </label>
+    <div class="note" id="scrambleNote">&nbsp;</div>
+    <div class="note why">
+      Turn it off and watch the waterfall. The payload is XORed with a PRBS so
+      that whatever the codec produces goes out looking like noise; without it,
+      a run of identical bytes becomes a run of identical symbols, and identical
+      symbols are a tone. Measured on FM44 with a payload of digital silence,
+      spectral flatness goes from 0.033 to 0.003 &mdash; eleven times more
+      tonal &mdash; while on ordinary compressed audio it barely moves, because
+      that is already high-entropy. Which is the whole point of the scrambler,
+      and the fastest way to see it.
+      <br><br>
+      Safe to flip while on air: it travels in the frame flags, so the receiver
+      follows within a frame. The signalling block stays scrambled either way
+      &mdash; that is where the flag lives.
+    </div>
   </details>
 
 </div>
@@ -967,6 +987,10 @@ connect(s => {
   set('uptime', s.uptime != null ? s.uptime.toFixed(0)+' s' : '-');
   set('peak', s.peak_dbfs != null ? s.peak_dbfs.toFixed(1)+' dBFS' : '-');
   set('clip', s.clipping != null ? (s.clipping*100).toFixed(3)+' %' : '-');
+  // The transmitter owns this too, and it is the sort of setting that must
+  // never be left off by accident -- so the box follows the air, not the click.
+  if (s.scramble !== undefined && document.activeElement !== $('scramble')
+      && $('scramble').checked !== s.scramble) $('scramble').checked = s.scramble;
 
   // Only meaningful once it is transmitting; before that they are placeholders
   // and colouring them would be inventing a diagnosis.
@@ -1061,6 +1085,17 @@ $('driveReset').onclick = () => { showDrive(0); control({cmd:'drive', drive_db: 
 
 $('applyChan').onclick = () => control({cmd:'channel',
   preset: $('chanPreset').value, snr: $('snr').value});
+
+// Applied immediately rather than behind Apply: the whole point is to watch
+// the waterfall change as it goes off and back on.
+$('scramble').onchange = async () => {
+  const on = $('scramble').checked;
+  await control({cmd: 'scramble', scramble: on});
+  set('scrambleNote', on ? ' '
+      : 'Dispersal off. A constant payload will now show as tones rather than '
+      + 'noise; the receiver follows from the frame flags.');
+  $('scrambleNote').className = 'note' + (on ? '' : ' warn');
+};
 
 function loadDevices() {
   control({cmd:'devices', all: $('allApis').checked}).then(r => {

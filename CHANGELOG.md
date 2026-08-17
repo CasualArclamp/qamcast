@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.3.1 — a switch for turning energy dispersal off
+
+**Added**
+
+- **Energy dispersal can be switched off from the testing panel**, which is the
+  fastest way to see what it does. Measured spectral flatness of the
+  transmitted frame (1.0 noise-like, small tonal):
+
+  | Payload | Dispersal on | off |
+  |---|---|---|
+  | Compressed audio, `FM44` | 0.033 | 0.023 |
+  | **Digital silence, `FM44`** | **0.033** | **0.003** |
+  | Digital silence, `OFDM44` | 0.163 | 0.048 |
+
+  Eleven times more tonal on silence, essentially unchanged on music — the
+  scrambler's whole case in two rows.
+- Safe to flip while on air: it travels in a spare frame flag, so the receiver
+  follows within a frame and the waterfall changes while you watch. Decoding is
+  unaffected, measured bit-exact in both modes with it off.
+- The receive panel says so when a transmitter has it off, since the signal
+  looks wrong on a waterfall and is not.
+
+The signalling block stays scrambled either way — the flag lives inside it, so
+a receiver needing the flag before it could read the block would have nowhere
+to start. No wire format change: the flag bit was already spare.
+
 ## v1.3.0 — a custom link is just its band
 
 **Changed**

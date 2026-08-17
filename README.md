@@ -567,6 +567,33 @@ The phases are stated outright rather than derived from a counter, which buys
 immunity to counter wraps, to joining at an arbitrary point, and to the whole
 class of bugs where two ends disagree about a modular arithmetic convention.
 
+### Energy dispersal, and a switch for watching it work
+
+The payload is XORed with a PRBS seeded per frame, so whatever the codec
+produces goes out looking like noise. Compressed audio is already high-entropy;
+digital silence and stuffing runs are not, and a run of identical bytes is a run
+of identical symbols, which is a tone.
+
+The testing panel can turn it off, which is the fastest way to see why it is
+there. Measured spectral flatness of the transmitted frame — 1.0 is noise-like,
+small is tonal:
+
+| Payload | Dispersal on | off |
+|---|---|---|
+| Compressed audio, `FM44` | 0.033 | 0.023 |
+| **Digital silence, `FM44`** | **0.033** | **0.003** |
+| Digital silence, `OFDM44` | 0.163 | 0.048 |
+
+Eleven times more tonal on silence, and essentially unchanged on music — which
+is the scrambler's whole case in two rows.
+
+It is safe to flip while on air, and that is the point: the setting rides in the
+frame flags, so the receiver follows within a frame and the waterfall changes
+while you watch. Decoding is unaffected — measured bit-exact in both modes with
+it off. The **signalling block stays scrambled either way**, and has to: the
+flag lives inside it, so a receiver needing the flag before it could read the
+block would have nowhere to start.
+
 Putting MODCOD in a codeword rather than a coded header removed a floor: the
 old header was QPSK rate-1/2 behind nothing but a CRC, making it weaker than
 the payload it described, and it failed at about 7 dB EVM whatever the payload

@@ -56,6 +56,7 @@
       <div><span>Buffered</span><b id="audiobuf">-</b></div>
     </div>
     <div class="note" id="bandnote">&nbsp;</div>
+    <div class="note" id="codingnote">&nbsp;</div>
     <label>Interleaver fill</label>
     <div class="bar"><i id="fillBar" style="width:0%"></i></div>
     <div class="note" id="fillNote">&nbsp;</div>
@@ -560,6 +561,12 @@ connect(s => {
   // tracks what the encoder is really sending -- VBR drift and all.
   set('audiorate', s.audio_rate != null ? (s.audio_rate/1000).toFixed(1)+' kbps' : '-');
   set('codectools', tools(s));
+  // Not a setting here -- read off the frame. Shown because a transmitter with
+  // dispersal off looks wrong on the waterfall and is not.
+  set('codingnote', s.scramble === false
+      ? 'Energy dispersal is off at the transmitter — a test setting. '
+        + 'Constant payload shows as tones; decoding is unaffected.' : ' ');
+  $('codingnote').className = 'note' + (s.scramble === false ? ' warn' : '');
   // The receiver is the authority on these -- another browser tab, or a
   // restart that reopened the device, can have moved them.
   if (s.paused !== undefined && s.paused !== PAUSED) { PAUSED = s.paused; paintPause(); }

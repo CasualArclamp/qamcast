@@ -475,6 +475,12 @@ class Receiver:
                 f"setting; audio starts once filled")
         state["hint"] = _diagnose(r, live.get("frames", 0),
                                   live.get("modcod") is not None)
+        # Read off the frame, not configured here. Worth showing because a
+        # transmitter with dispersal off looks wrong on the waterfall and is
+        # not, and because nothing else on this panel would explain it.
+        hdr = r.header if r is not None else None
+        state["scramble"] = (None if hdr is None
+                             else not (hdr.flags & framing.FLAG_NOSCRAMBLE))
         # Keep the last snapshot where callers that are not a browser can see
         # it -- the CLI and tools/selftest.py both read _state, and when this
         # moved onto a publisher thread they silently started reading the

@@ -58,6 +58,16 @@ CODEC_NAMES = {
 
 FLAG_CONFIG = 0x1   # a codec config packet starts in this frame
 FLAG_PAD = 0x2      # a PAD packet starts in this frame
+# Energy dispersal off, for looking at what it does. See scramble() -- with it
+# on, a payload of digital silence is indistinguishable from one of music; with
+# it off the same silence becomes a comb of tones you can watch on the
+# waterfall. Signalled rather than agreed, so it can be flipped mid-broadcast
+# and the receiver follows within a frame.
+#
+# It disperses the *payload* only. The signalling block stays scrambled always,
+# and has to: this flag lives inside it, so a receiver that needed the flag
+# before it could read the block would have nowhere to start.
+FLAG_NOSCRAMBLE = 0x4
 
 # Control information is split in two, and the split is the point.
 #
@@ -401,9 +411,10 @@ def channel_bits(profile: Profile, modcod: Modcod, header: Header,
     # It is also scrambled with a *fixed* seed while the payload uses the
     # frame counter. The counter lives inside the signalling, so seeding the
     # signalling from it would require knowing it in order to read it.
+    plain = bool(header.flags & FLAG_NOSCRAMBLE)
     scrambled = np.concatenate([
         scramble(header.to_signalling(), SIGNALLING_SEED),
-        scramble(payload_bytes, header.frame_count),
+        payload_bytes if plain else scramble(payload_bytes, header.frame_count),
     ])
     info = np.unpackbits(scrambled)
     # Pad to the exact info-bit count the rate adapter expects.
@@ -413,9 +424,13 @@ def channel_bits(profile: Profile, modcod: Modcod, header: Header,
     need = cap.channel_bits
     if len(channel) < need:
         # Fill any remainder with scrambler output so the tail of the frame
-        # carries noise-like energy instead of a run of constant symbols.
-        filler = np.unpackbits(_scramble_mask((need - len(channel) + 7) // 8,
-                                              0x1234 ^ header.frame_count))
+        # carries noise-like energy instead of a run of constant symbols. With
+        # dispersal off the filler goes too, and deliberately: the tail is then
+        # a constant run, which is precisely the thing being demonstrated.
+        filler = (np.zeros(need - len(channel), dtype=np.uint8) if plain
+                  else np.unpackbits(_scramble_mask(
+                      (need - len(channel) + 7) // 8,
+                      0x1234 ^ header.frame_count)))
         channel = np.concatenate([channel, filler[:need - len(channel)]])
     return channel[:need]
 
@@ -467,4 +482,9 @@ def decode_payload(profile: Profile, modcod: Modcod, data: np.ndarray,
         scramble(block[:SIGNALLING_BYTES], SIGNALLING_SEED), modcod.index)
     if header is None:
         return None, None
-    return header, scramble(block[SIGNALLING_BYTES:], header.frame_count)
+    # The header settles whether the payload was dispersed, which is why the
+    # flag has to live in a block that is always dispersed itself.
+    payload = block[SIGNALLING_BYTES:]
+    if not header.flags & FLAG_NOSCRAMBLE:
+        payload = scramble(payload, header.frame_count)
+    return header, payload

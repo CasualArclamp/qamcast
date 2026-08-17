@@ -112,6 +112,11 @@ class Transmitter:
         self._source = ""
         self._drive_db = 0.0
         self._drive = 1.0
+        # Energy dispersal, on unless a test turns it off. Held here rather
+        # than passed to the worker so it can be flipped while on air -- which
+        # is the point, since the thing it demonstrates is a change you watch
+        # happen on the waterfall.
+        self._scramble = True
         self.error: str | None = None
 
     # -- control ---------------------------------------------------------
@@ -343,6 +348,16 @@ class Transmitter:
             self._chan_cfg = new
         return {"ok": True, "summary": new.summary()}
 
+    def set_scramble(self, cfg: dict) -> dict:
+        """Turn energy dispersal on or off, live.
+
+        The receiver is not told separately: the setting rides in the frame
+        flags, so it follows within a frame. That is what makes this worth
+        having as a button rather than a matched pair of settings.
+        """
+        self._scramble = bool(cfg.get("scramble", True))
+        return {"ok": True, "scramble": self._scramble}
+
     def control(self, msg: dict) -> dict:
         cmd = msg.get("cmd")
         if cmd == "start":
@@ -355,6 +370,8 @@ class Transmitter:
             return self.set_metadata(msg)
         if cmd == "nowplaying":
             return self.nowplaying(msg)
+        if cmd == "scramble":
+            return self.set_scramble(msg)
         if cmd == "channel":
             return self.set_channel(msg)
         if cmd == "drive":
@@ -464,9 +481,10 @@ class Transmitter:
                     tx.push_audio(pending.pop(0))
 
                 payload, il, rsp = tx.next_frame()
-                hdr = framing.Header(modcod.index, enc.choice.codec_id, il, rsp,
-                                     frames % framing.FRAME_COUNT_MOD,
-                                     interleaver=tx.depth)
+                hdr = framing.Header(
+                    modcod.index, enc.choice.codec_id, il, rsp,
+                    frames % framing.FRAME_COUNT_MOD, interleaver=tx.depth,
+                    flags=0 if self._scramble else framing.FLAG_NOSCRAMBLE)
                 # Single carrier builds symbols explicitly rather than going
                 # straight to audio: the constellation display needs them, and
                 # rebuilding them afterwards would modulate the frame twice.
@@ -560,6 +578,7 @@ class Transmitter:
                          + f" \u00b7 {lo/1000:.1f}-{hi/1000:.1f} kHz",
             "modcod": modcod.label_for(profile.constellation_family),
             "interleave": profiles.interleaver_seconds(meta.get("depth")),
+            "scramble": self._scramble,
             # What this rung needs to be received. Quoted as Es/N0 but
             # measured as EVM, which is the same number on a link whose only
             # impairment is noise and a pessimistic one otherwise -- and it is

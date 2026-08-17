@@ -96,22 +96,26 @@ class TransmitChain:
     :meth:`reconfigure`.
     """
 
-    def __init__(self, profile: Profile, modcod: Modcod):
+    def __init__(self, profile: Profile, modcod: Modcod,
+                 depth: int | None = None):
         self.profile = profile
-        self.reconfigure(modcod)
+        self.reconfigure(modcod, depth)
 
-    def reconfigure(self, modcod: Modcod) -> None:
-        """Switch MODCOD, rebuilding the outer chain.
+    def reconfigure(self, modcod: Modcod, depth: int | None = None) -> None:
+        """Switch MODCOD or interleaver depth, rebuilding the outer chain.
 
         This discards whatever is in the interleaver, so the receiver sees a
-        gap of one interleaver depth. That is acceptable because MODCOD here
-        is an operator setting -- you pick a bitrate for the station and leave
-        it -- not something that adapts second to second. Auto-probe
-        *recommends* a rung; a human applies it.
+        gap of one interleaver depth. That is acceptable because both of these
+        are operator settings -- you pick a bitrate and a depth for the station
+        and leave them -- not something that adapts second to second.
+        Auto-probe *recommends* a rung; a human applies it.
         """
         self.modcod = modcod
+        self.depth = (profiles.INTERLEAVER_DEFAULT_INDEX if depth is None
+                      else int(depth))
         self.capacity = self.profile.capacity(modcod)
-        branches, increment = profiles.interleaver_geometry(self.profile, modcod)
+        branches, increment = profiles.interleaver_geometry(
+            self.profile, modcod, self.depth)
         self.interleaver = interleave.Interleaver(branches, increment)
         self.branches = branches
         self._queue = bytearray()        # transport stream awaiting RS
@@ -217,15 +221,19 @@ class ReceiveChain:
 
     profile: Profile
     modcod: Modcod
+    depth: int | None = None
     stats: ReceiveStats = field(default_factory=ReceiveStats)
 
     def __post_init__(self) -> None:
-        self.reconfigure(self.modcod)
+        self.reconfigure(self.modcod, self.depth)
 
-    def reconfigure(self, modcod: Modcod) -> None:
+    def reconfigure(self, modcod: Modcod, depth: int | None = None) -> None:
         self.modcod = modcod
+        self.depth = (profiles.INTERLEAVER_DEFAULT_INDEX if depth is None
+                      else int(depth))
         self.capacity = self.profile.capacity(modcod)
-        branches, increment = profiles.interleaver_geometry(self.profile, modcod)
+        branches, increment = profiles.interleaver_geometry(
+            self.profile, modcod, self.depth)
         self.deinterleaver = interleave.Deinterleaver(branches, increment)
         self.branches = branches
         self.total_delay = interleave.delay_bytes(branches, increment)

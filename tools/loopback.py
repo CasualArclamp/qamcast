@@ -27,11 +27,12 @@ from qamcore import framing, modulator, ofdm, profiles, transport  # noqa: E402
 
 
 def run(profile_name: str, modcod_index: int, preset: str, snr: float | None,
-        frames: int, verbose: bool) -> int:
+        frames: int, verbose: bool, depth: float | None = None) -> int:
     profile = profiles.get_profile(profile_name)
     modcod = profiles.MODCOD_BY_INDEX[modcod_index]
     cap = profile.capacity(modcod)
 
+    dep = profiles.interleaver_index(depth)
     cfg = CH.PRESETS[preset]
     if snr is not None:
         cfg = CH.ChannelConfig(**{**cfg.__dict__, "snr_db": snr})
@@ -39,15 +40,17 @@ def run(profile_name: str, modcod_index: int, preset: str, snr: float | None,
 
     print(f"{profile.name} / {modcod}  ({cap.net_bitrate/1000:.1f} kbps net)")
     print(f"channel: {cfg.summary()}")
+    print(f"interleaver: {profiles.interleaver_delay(profile, modcod, dep):.1f} s "
+          f"({profiles.interleaver_geometry(profile, modcod, dep)[0]} branches)")
     print()
 
-    tx = transport.TransmitChain(profile, modcod)
+    tx = transport.TransmitChain(profile, modcod, dep)
     mod = (ofdm.CodedModulator(profile) if profile.is_ofdm
            else modulator.Modulator(profile))
     chan = CH.Channel(profile, cfg)
     dem = (ofdm.CodedDemodulator(profile) if profile.is_ofdm
            else D.Demodulator(profile))
-    rx = transport.ReceiveChain(profile, modcod)
+    rx = transport.ReceiveChain(profile, modcod, dep)
 
     pad = transport.Pad("QAM TEST", "Loopback", "qamcore")
     payloads: list[bytes] = []
@@ -68,7 +71,8 @@ def run(profile_name: str, modcod_index: int, preset: str, snr: float | None,
         payload, il, rsp = tx.next_frame()
         payloads.append(payload.tobytes())
         count = n % framing.FRAME_COUNT_MOD
-        hdr = framing.Header(modcod.index, framing.CODEC_OPUS, il, rsp, count)
+        hdr = framing.Header(modcod.index, framing.CODEC_OPUS, il, rsp, count,
+                             interleaver=dep)
         sent_seq.append(payload.tobytes())
         chunk = mod.modulate_frame(modcod, hdr, payload)
         dem.feed(chan.process(chunk))
@@ -178,9 +182,13 @@ def main() -> int:
     ap.add_argument("--channel", default="clean", choices=sorted(CH.PRESETS))
     ap.add_argument("--snr", type=float, default=None)
     ap.add_argument("--frames", type=int, default=30)
+    ap.add_argument("--interleave", type=float, default=None,
+                    choices=list(profiles.INTERLEAVER_CHOICES),
+                    help="diversity delay, seconds")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
-    return run(a.profile, a.modcod, a.channel, a.snr, a.frames, a.verbose)
+    return run(a.profile, a.modcod, a.channel, a.snr, a.frames, a.verbose,
+               a.interleave)
 
 
 if __name__ == "__main__":

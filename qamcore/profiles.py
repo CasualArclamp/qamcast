@@ -1142,7 +1142,8 @@ def symbol_rate_for_bitrate(sample_rate: int, bitrate: int, modcod: Modcod,
 def plan(sample_rate: int, symbol_rate: int, modcod: Modcod,
          rolloff: float = 0.25, pilot_spacing: int = 64,
          carrier: float | None = None,
-         frame_symbols: int | None = None, mode: str = "sc") -> dict:
+         frame_symbols: int | None = None, mode: str = "sc",
+         depth: int | None = None) -> dict:
     """Everything the UI shows for one combination of settings.
 
     ``carrier`` matters because it decides where the occupied band sits, and
@@ -1185,7 +1186,9 @@ def plan(sample_rate: int, symbol_rate: int, modcod: Modcod,
         "required_evm_db": modcod.required_evm_db,
         "net_bitrate": round(cap.net_bitrate),
         "max_audio_bitrate": max(0, round(cap.net_bitrate) - PAD_RESERVE_BPS),
-        "interleaver_seconds": round(interleaver_delay(p, modcod), 1),
+        "interleaver_seconds": round(interleaver_delay(p, modcod, depth), 1),
+        "interleave": interleaver_seconds(depth),
+        "interleave_choices": list(INTERLEAVER_CHOICES),
     }
 
 
@@ -1197,7 +1200,51 @@ def plan(sample_rate: int, symbol_rate: int, modcod: Modcod,
 # impulse noise is spread across many RS codewords instead of destroying a few
 # outright -- and long enough that you wait for it at startup and after any
 # loss of lock. That wait is the deliberate trade the user chose.
-INTERLEAVER_DEPTH_SECONDS = 6.0
+#
+# It is a dial rather than a constant because the right answer is a property of
+# the path, and the two ends of the trade are both real:
+#
+#   shallow  audio starts quickly and recovers quickly, and a fade longer than
+#            the depth takes out whole codewords rather than a byte from each
+#   deep     rides out a fade many times longer, at the cost of waiting the
+#            same amount at startup and after every loss of lock
+#
+# A burst of length L is spread across ceil(L / branches) errors per codeword,
+# and branches saturates at 255, so past that point extra depth works by
+# spacing the branches further apart in time rather than by spreading wider.
+# That is still what matters against a *fade*, which is long and contiguous.
+#
+# Unlike the profile, this does not have to be agreed in advance: it travels in
+# the signalling block, so the receiver follows whatever the transmitter picks,
+# the same way it follows MODCOD. Four rungs, because the index is two bits on
+# the wire.
+INTERLEAVER_CHOICES = (2.0, 6.0, 12.0, 24.0)
+INTERLEAVER_DEPTH_SECONDS = 6.0          # the default rung
+INTERLEAVER_DEFAULT_INDEX = INTERLEAVER_CHOICES.index(INTERLEAVER_DEPTH_SECONDS)
+
+
+def interleaver_seconds(index: int | None) -> float:
+    """Depth in seconds for a wire index, forgiving of a missing one."""
+    if index is None:
+        return INTERLEAVER_DEPTH_SECONDS
+    try:
+        return INTERLEAVER_CHOICES[int(index)]
+    except (IndexError, ValueError, TypeError):
+        return INTERLEAVER_DEPTH_SECONDS
+
+
+def interleaver_index(seconds: float | None) -> int:
+    """Wire index for a depth in seconds. Nearest rung, not an exact match.
+
+    Zero counts as unset, not as a request for the shallowest rung. The UI
+    sends numbers as ``+field.value || 0``, so a dropdown that has not been
+    filled in yet arrives as 0 -- and nearest-rung would read that as two
+    seconds, quietly making the shallowest setting the default.
+    """
+    if not seconds:
+        return INTERLEAVER_DEFAULT_INDEX
+    return min(range(len(INTERLEAVER_CHOICES)),
+               key=lambda i: abs(INTERLEAVER_CHOICES[i] - float(seconds)))
 
 
 def channel_byte_rate(profile: Profile, modcod: Modcod) -> float:
@@ -1209,20 +1256,28 @@ def channel_byte_rate(profile: Profile, modcod: Modcod) -> float:
     return profile.net_bitrate(modcod) / 8.0 / modcod.rs_rate
 
 
-def interleaver_geometry(profile: Profile, modcod: Modcod) -> tuple[int, int]:
-    """(branches, increment) for this profile and MODCOD.
+def interleaver_geometry(profile: Profile, modcod: Modcod,
+                         depth: int | None = None) -> tuple[int, int]:
+    """(branches, increment) for this profile, MODCOD and depth rung.
 
-    Scaled by byte rate so the *time* spanned stays at
-    INTERLEAVER_DEPTH_SECONDS on every rung. A fixed geometry would give six
-    seconds of protection at QPSK 1/4 and well under one at 256QAM, which is
-    backwards -- the fast modes are the fragile ones.
+    Scaled by byte rate so the *time* spanned stays at the chosen depth on
+    every rung of the ladder. A fixed geometry would give six seconds of
+    protection at QPSK 1/4 and well under one at 256QAM, which is backwards --
+    the fast modes are the fragile ones.
     """
-    return interleave.geometry(INTERLEAVER_DEPTH_SECONDS, channel_byte_rate(profile, modcod))
+    return interleave.geometry(interleaver_seconds(depth),
+                               channel_byte_rate(profile, modcod))
 
 
-def interleaver_delay(profile: Profile, modcod: Modcod) -> float:
-    """Actual end-to-end delay the interleaver adds, in seconds."""
-    branches, increment = interleaver_geometry(profile, modcod)
+def interleaver_delay(profile: Profile, modcod: Modcod,
+                      depth: int | None = None) -> float:
+    """Actual end-to-end delay the interleaver adds, in seconds.
+
+    The delivered figure, not the one asked for: the geometry lands on whole
+    branches and a whole increment, so it comes out near the rung rather than
+    on it, and near is what the panel should quote.
+    """
+    branches, increment = interleaver_geometry(profile, modcod, depth)
     return interleave.delay_bytes(branches, increment) / channel_byte_rate(profile, modcod)
 
 

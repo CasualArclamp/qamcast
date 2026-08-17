@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.2.0 — selectable interleaver depth
+
+**Added**
+
+- **Interleaver depth is a dial: 2, 6, 12 or 24 seconds**, six being the
+  previous fixed value and still the default. Dropdown on the transmit page,
+  `--interleave` on the CLI.
+- It **does not need matching by hand.** The depth rides in the signalling
+  block, so the receiver reads it off the first frame it decodes and
+  reconfigures itself — same arrangement as MODCOD. The receive panel reports
+  what it is following.
+
+**Measured** — `FM44` at 64QAM 5/6, longest dropout costing no audio at all:
+
+| Depth | Rides out | Wait at startup |
+|---|---|---|
+| 2 s | 61 ms | 2.0 s |
+| 6 s | 103 ms | 6.0 s |
+| 12 s | 211 ms | 12.1 s |
+| 24 s | 422 ms | 24.1 s |
+
+Past that threshold deeper is *worse* — once a burst overwhelms the code,
+spreading it wider turns a concentrated loss into a diffuse one. At a 1 s
+dropout the 2 s rung lost 61 audio packets and the 24 s rung lost 492.
+
+**Fixed**
+
+- The interleaver geometry overshot badly on long delays: it maximised
+  branches first and rounded the increment afterwards, and once branches
+  saturated at 255 one step of the increment was seven seconds. A 12 s request
+  came back as 14.8 s. It now searches both, preferring the most branches among
+  the geometries that hit the depth within 5% — so the delivered depth is
+  within 4.5% everywhere, and the branch count *rises* at the deep end (230 at
+  12 and 24 s, where the old rule would have taken 255 with a 23% overshoot).
+
+**Wire format**
+
+- Signalling grows from six bytes to seven (two bits of depth, six reserved),
+  and `WIRE_VERSION` goes to 2. Old and new builds will not interoperate.
+
 ## v1.1.1 — the transmitter now sends what its link key says
 
 **Fixed**

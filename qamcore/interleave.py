@@ -32,19 +32,68 @@ from . import rs
 MAX_BRANCHES = rs.N  # 255; more spreading than this buys nothing against RS(255,k)
 
 
+# Below this the interleaver stops being one: spreading a burst across a
+# handful of branches puts several errors in the same codeword. Well under the
+# 255 that saturates the benefit, but far enough above 2 that trimming the
+# branch count to hit a delay target cannot quietly destroy the spreading.
+MIN_USEFUL_BRANCHES = 64
+
+# How far the delivered depth may sit from the requested one before accuracy
+# starts to matter more than spreading. Generous on purpose: the depth is a
+# handful of seconds chosen by feel, and five per cent of it is not something
+# an operator can perceive, whereas losing two thirds of the branches is a
+# real loss of burst protection.
+DELAY_TOLERANCE = 0.05
+
+
 def geometry(delay_seconds: float, byte_rate: float) -> tuple[int, int]:
     """Pick (branches, increment) for a target delay at a given byte rate.
 
-    Branches are maximised first, because spreading is what the interleaver is
-    for; the increment then trims the delay to target. Capped at 255 since a
-    burst already lands one byte per codeword there, and pushed no lower than
-    the point where the delay would overshoot.
+    Both are integers and the delay is their product with (branches - 1), so
+    not every target is reachable. What is reachable changes character once
+    branches saturates: at 255 the only knob left is the increment, and one
+    step of it is 255 x 254 bytes -- seven seconds at a typical rate. Choosing
+    the branches first and rounding the increment afterwards therefore lands
+    wherever that coarse grid happens to fall. Measured on FM44 at 64QAM 5/6,
+    a 12 second request came back as 14.8, a 23% overshoot, and the panel
+    honestly reported the 14.8.
+
+    So search instead: for each increment, the branch count that hits the
+    target is about sqrt(target / increment), and trimming a few branches off
+    255 buys a far closer delay than stepping the increment does. Ties go to
+    more branches, because spreading is what the interleaver is for -- but
+    only down to MIN_USEFUL_BRANCHES, below which a closer delay would be
+    bought with the thing being paid for.
     """
     target = max(1.0, delay_seconds * byte_rate)
-    branches = int(np.floor(np.sqrt(target)))
-    branches = max(2, min(MAX_BRANCHES, branches))
-    increment = max(1, int(round(target / (branches * (branches - 1)))))
-    return branches, increment
+    # The floor is relaxed when the target is genuinely small: a link wanting
+    # only a few thousand bytes of delay cannot have 64 branches, and should
+    # get the spreading it can afford rather than an error.
+    floor = min(MIN_USEFUL_BRANCHES, max(2, int(np.sqrt(target))))
+    close: list[tuple[int, int]] = []
+    fallback: tuple[float, tuple[int, int]] | None = None
+    for increment in range(1, 4097):
+        # b(b-1) * increment = target, solved for b and looked at either side,
+        # since the exact root is rarely an integer.
+        root = 0.5 + np.sqrt(max(0.0, target / increment) + 0.25)
+        for branches in {int(np.floor(root)), int(np.ceil(root))}:
+            branches = max(floor, min(MAX_BRANCHES, branches))
+            err = abs(delay_bytes(branches, increment) - target) / target
+            if err <= DELAY_TOLERANCE:
+                close.append((branches, increment))
+            if fallback is None or err < fallback[0]:
+                fallback = (err, (branches, increment))
+        if root <= floor:
+            break                      # larger increments only shrink branches
+    # Spreading first, delay second. Every candidate here already hits the
+    # requested depth to within the tolerance, so the one to take is simply
+    # the one that spreads a burst widest -- which is what the interleaver is
+    # for. Choosing on delay accuracy instead was measured to drop a six
+    # second link from 229 branches to 87 for a 0.4% gain in a number nobody
+    # can hear.
+    if close:
+        return max(close, key=lambda bi: bi[0])
+    return fallback[1]
 
 
 def delay_bytes(branches: int, increment: int) -> int:

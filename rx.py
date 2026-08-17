@@ -272,6 +272,7 @@ class Receiver:
 
             chain: transport.ReceiveChain | None = None
             modcod = None
+            depth = None
             codec_id = None
             config: bytes | None = None
             pad = transport.Pad()
@@ -313,14 +314,21 @@ class Receiver:
                         continue
                     locked_frames += 1
 
-                    # Reconfigure whenever the transmitter's MODCOD changes.
-                    # It restarts the outer chain, which costs an interleaver
-                    # depth -- but MODCOD is an operator setting that changes
-                    # rarely, so paying for it here is cheaper than carrying
-                    # machinery to avoid it.
-                    if modcod is None or r.modcod.index != modcod.index:
+                    # Reconfigure whenever the transmitter's MODCOD or
+                    # interleaver depth changes. Either restarts the outer
+                    # chain, which costs an interleaver depth -- but both are
+                    # operator settings that change rarely, so paying for it
+                    # here is cheaper than carrying machinery to avoid it.
+                    #
+                    # The depth is read from the frame rather than set by hand:
+                    # it is in the signalling block, so a receiver started
+                    # against a deeply interleaved broadcast follows it without
+                    # being told, the same way it follows MODCOD.
+                    if (modcod is None or r.modcod.index != modcod.index
+                            or r.header.interleaver != depth):
                         modcod = r.modcod
-                        chain = transport.ReceiveChain(profile, modcod)
+                        depth = r.header.interleaver
+                        chain = transport.ReceiveChain(profile, modcod, depth)
 
                     for ptype, payload in chain.push_frame(
                             r.payload, r.header.il_phase, r.header.rs_phase,
@@ -446,8 +454,13 @@ class Receiver:
 
         if chain is not None:
             state["fill"] = chain.fill_fraction
-            state["fill_note"] = (f"{chain.fill_seconds:.1f} s of diversity delay; "
-                                  f"audio starts once filled")
+            # Named as the transmitter's choice, because it is one: the depth
+            # arrives in the signalling and this end has no dial for it.
+            state["interleave"] = profiles.interleaver_seconds(chain.depth)
+            state["fill_note"] = (
+                f"{chain.fill_seconds:.1f} s of diversity delay, from the "
+                f"transmitter's {profiles.interleaver_seconds(chain.depth):g} s "
+                f"setting; audio starts once filled")
         state["hint"] = _diagnose(r, live.get("frames", 0),
                                   live.get("modcod") is not None)
         # Keep the last snapshot where callers that are not a browser can see

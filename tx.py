@@ -136,6 +136,9 @@ class Transmitter:
             # carries the requested bitrate -- the old behaviour, kept so the
             # simple path stays simple.
             modcod = pick_modcod(cfg, profile, bitrate)
+            # The depth travels in the signalling, so it is the transmitter's
+            # choice alone and the receiver has no dial for it.
+            depth = profiles.interleaver_index(cfg.get("interleave"))
         except (ValueError, KeyError) as exc:
             return {"error": str(exc)}
 
@@ -163,7 +166,7 @@ class Transmitter:
         self._thread = threading.Thread(
             target=self._run,
             args=(source, cfg.get("codec", "opus"), bitrate, profile, modcod,
-                  cfg.get("device", ""), passthrough),
+                  cfg.get("device", ""), passthrough, depth),
             daemon=True)
         self._thread.start()
         return {"ok": True,
@@ -375,7 +378,7 @@ class Transmitter:
     # -- worker ----------------------------------------------------------
 
     def _run(self, source, codec_name, bitrate, profile, modcod, device,
-             passthrough=None) -> None:
+             passthrough=None, depth=None) -> None:
         enc = sink = None
         try:
             enc = self._enc = codec.Encoder(source, codec_name, bitrate,
@@ -384,7 +387,7 @@ class Transmitter:
             enc.start()
             sink = self._sink = open_output(device, profile.sample_rate)
 
-            tx = transport.TransmitChain(profile, modcod)
+            tx = transport.TransmitChain(profile, modcod, depth)
             # One line decides the physical layer. Everything after it --
             # the transport chain, the FEC, the framing, the scope, the drive
             # -- is identical, which is the point of giving the OFDM path the
@@ -407,6 +410,9 @@ class Transmitter:
             self._meta = {
                 "profile": profile, "modcod": modcod, "cap": cap,
                 "bitrate": bitrate, "spare": spare, "started": started,
+                # The chain's own index, not the request -- it is what goes
+                # into every header, so it is what the panel should quote.
+                "depth": tx.depth,
                 # The encoder's own choice, not the one the page predicted --
                 # so what is displayed is what is actually being encoded.
                 "choice": enc.choice,
@@ -447,7 +453,8 @@ class Transmitter:
 
                 payload, il, rsp = tx.next_frame()
                 hdr = framing.Header(modcod.index, enc.choice.codec_id, il, rsp,
-                                     frames % framing.FRAME_COUNT_MOD)
+                                     frames % framing.FRAME_COUNT_MOD,
+                                     interleaver=tx.depth)
                 # Single carrier builds symbols explicitly rather than going
                 # straight to audio: the constellation display needs them, and
                 # rebuilding them afterwards would modulate the frame twice.
@@ -540,6 +547,7 @@ class Transmitter:
                             else f"{profile.symbol_rate} Bd")
                          + f" \u00b7 {lo/1000:.1f}-{hi/1000:.1f} kHz",
             "modcod": modcod.label_for(profile.constellation_family),
+            "interleave": profiles.interleaver_seconds(meta.get("depth")),
             # What this rung needs to be received. Quoted as Es/N0 but
             # measured as EVM, which is the same number on a link whose only
             # impairment is noise and a pessimistic one otherwise -- and it is
@@ -785,6 +793,7 @@ def _apply_carriers(profile: profiles.Profile, carriers) -> tuple:
 def _solve_ofdm(profile: profiles.Profile, msg: dict) -> dict:
     """What the UI shows for an OFDM profile."""
     moved = []
+    depth = profiles.interleaver_index(msg.get("interleave"))
     try:
         profile = profiles.with_spacing(profile, msg.get("spacing") or None)
         profile, narrowed = _apply_carriers(profile, msg.get("carriers"))
@@ -827,7 +836,10 @@ def _solve_ofdm(profile: profiles.Profile, msg: dict) -> dict:
         "required_evm_db": modcod.required_evm_db,
         "net_bitrate": round(cap.net_bitrate),
         "max_audio_bitrate": round(ceiling),
-        "interleaver_seconds": round(profiles.interleaver_delay(profile, modcod), 1),
+        "interleaver_seconds": round(
+            profiles.interleaver_delay(profile, modcod, depth), 1),
+        "interleave": profiles.interleaver_seconds(depth),
+        "interleave_choices": list(profiles.INTERLEAVER_CHOICES),
         "bitrate": max(0, bitrate),
         "carries": bitrate <= ceiling,
         "locks": [], "moved": moved, "notes": [],
@@ -1084,7 +1096,8 @@ def solve(msg: dict) -> dict:
         if not msg.get("frame_symbols"):
             frame_symbols = None
     out = profiles.plan(sample_rate, symbol_rate, modcod, rolloff, pilot,
-                        carrier, frame_symbols, mode=sc_mode)
+                        carrier, frame_symbols, mode=sc_mode,
+                        depth=profiles.interleaver_index(msg.get("interleave")))
     out["bitrate"] = max(0, bitrate)
     out["symbol_rates"] = rates
     # Encoded from the profile the plan actually describes, not from the three
@@ -1279,6 +1292,12 @@ def main() -> int:
                     help="constellation family for --profile CUSTOM: square "
                          "QAM, or APSK rings for a compressed amplifier. The "
                          "named presets carry their own.")
+    ap.add_argument("--interleave", type=float, default=None,
+                    choices=list(profiles.INTERLEAVER_CHOICES),
+                    help="diversity delay, seconds. Deeper rides out a longer "
+                         "fade and costs the same wait at startup and after "
+                         "every dropout. Travels in the signalling, so the "
+                         "receiver follows it.")
     ap.add_argument("--modcod", default=None,
                     help="MODCOD index; omit to choose from the bitrate")
     ap.add_argument("--modulation", default=None,
@@ -1363,6 +1382,7 @@ def main() -> int:
                 "carrier": a.carrier, "carriers": a.carriers,
                 "spacing": a.spacing,
                 "pilot_spacing": a.pilot_spacing, "mode": a.mode,
+                "interleave": a.interleave,
                 "modcod": a.modcod, "modulation": a.modulation,
                 "code_rate": a.code_rate}
         try:

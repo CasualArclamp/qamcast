@@ -457,10 +457,46 @@ any time with `tools/thresholds.py`.
 
 Coding is Reed-Solomon over GF(256) outside a K=7 convolutional code
 (G1 = 0o171, G2 = 0o133) with DVB-S puncturing and soft-decision Viterbi, and
-a Forney convolutional interleaver about six seconds deep between them. That
-depth is the deliberate trade: a fade or a burst of impulse noise is spread
-across many RS codewords instead of destroying a few outright, and you wait
-for it at startup and after any loss of lock.
+a Forney convolutional interleaver between them.
+
+### Interleaver depth
+
+The depth is the deliberate trade: a fade or a burst of impulse noise is spread
+across many RS codewords instead of destroying a few outright, and you wait for
+it at startup and after any loss of lock. It is selectable — **2, 6, 12 or 24
+seconds**, six being the default — because how long a dropout a path throws at
+you is a property of the path.
+
+Measured on `FM44` at 64QAM 5/6, RS(255,239), corrupting a contiguous run of
+bytes with sync left untouched, the longest dropout that costs **no audio at
+all**:
+
+| Depth | Geometry | Rides out | Wait at startup |
+|---|---|---|---|
+| 2 s | 133 branches × 1 | 61 ms | 2.0 s |
+| **6 s** | 230 branches × 1 | **103 ms** | 6.0 s |
+| 12 s | 230 branches × 2 | 211 ms | 12.1 s |
+| 24 s | 230 branches × 4 | 422 ms | 24.1 s |
+
+It doubles as the depth doubles, which is what it should do — a burst of *L*
+bytes lands roughly `255L / (L + delay)` errors in each codeword, so the
+correctable burst grows with the delay. The 2 s rung is off that line because
+it is short enough that the branch count falls too, and branches are what
+spread a burst *across* codewords in the first place.
+
+**Past that threshold, deeper is worse**, and that is worth knowing before
+reaching for 24 s. Once a burst overwhelms the code, spreading it wider turns a
+concentrated loss into a diffuse one: at a 1 s dropout the 2 s rung lost 61
+audio packets and the 24 s rung lost 492. Interleaving buys you a cliff edge
+further out, not a gentler slope.
+
+The depth **does not have to be matched by hand.** It rides in the signalling
+block, so the receiver reads it off the first frame it decodes and reconfigures
+itself — the same arrangement as MODCOD, and for the same reason: it changes
+nothing about the waveform, so it can be protected by the payload's own FEC
+rather than having to be known in advance. `--interleave 12` on the
+transmitter, or the dropdown; the receiver has no dial for it and reports what
+it is following.
 
 ## Frame
 
@@ -480,9 +516,9 @@ mid-broadcast must work out everything it needs from the next frame it sees.**
   payload — and being what everything waits on, it is worth 18 dB of
   processing gain. It occupies the symbols the old coded header used, so it
   costs no capacity.
-- **Everything else** — codec, flags, interleaver and RS phases, frame
-  counter — rides inside the payload, protected by the same coding as the
-  audio. Six bytes, about 0.1% of the frame.
+- **Everything else** — codec, flags, interleaver and RS phases, interleaver
+  depth, frame counter — rides inside the payload, protected by the same coding
+  as the audio. Seven bytes, about 0.1% of the frame.
 
 The phases are stated outright rather than derived from a counter, which buys
 immunity to counter wraps, to joining at an arbitrary point, and to the whole

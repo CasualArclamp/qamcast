@@ -38,7 +38,11 @@ import numpy as np
 from . import constellation, conv, profiles
 from .profiles import HEADER_SYMBOLS, PREAMBLE_SYMBOLS, Modcod, Profile
 
-WIRE_VERSION = 1
+# Bumped to 2 when the signalling block gained the interleaver depth and grew
+# from six bytes to seven. The layout change alone would already make an old
+# and a new build fail to talk -- the CRC covers the whole body -- but failing
+# on an explicit version check says why.
+WIRE_VERSION = 2
 
 # Codec identifiers, wire format. Appending is safe; renumbering is not.
 CODEC_OPUS = 0
@@ -73,6 +77,19 @@ FLAG_PAD = 0x2      # a PAD packet starts in this frame
 # before their payload would have. Nothing now gates a frame except the FEC
 # the payload carries anyway.
 
+# The interleaver depth rides here rather than in the link key, and that split
+# is the same one as everywhere else: the key carries what a receiver needs
+# *before* it can hear anything, and the signalling carries what it needs to
+# decode what it has already heard. The depth is the second kind -- it changes
+# nothing about the waveform, and the block it lives in is protected by the
+# same FEC as the payload it describes. So the receiver follows the
+# transmitter's choice with no dial of its own, exactly as it does for MODCOD.
+#
+# The field total must be a whole number of bytes: the body is packed with
+# np.packbits and the CRC is appended to it. Adding two bits took 32 to 34, so
+# it goes to 40 and the remaining six are reserved -- they cost one byte per
+# frame, which is 0.03% at FM44 and under half a per cent at the very bottom of
+# the ladder, and buy room for the next field without another format break.
 SIGNALLING_FIELDS: tuple[tuple[str, int], ...] = (
     ("version", 2),
     ("codec", 3),
@@ -80,10 +97,13 @@ SIGNALLING_FIELDS: tuple[tuple[str, int], ...] = (
     ("il_phase", 8),
     ("rs_phase", 8),
     ("frame_count", 8),
+    ("interleaver", 2),
+    ("reserved", 6),
 )
-SIGNALLING_BITS = sum(w for _, w in SIGNALLING_FIELDS)   # 32
+SIGNALLING_BITS = sum(w for _, w in SIGNALLING_FIELDS)   # 40
 SIGNALLING_CRC_BITS = 16
-SIGNALLING_BYTES = (SIGNALLING_BITS + SIGNALLING_CRC_BITS) // 8   # 6
+SIGNALLING_BYTES = (SIGNALLING_BITS + SIGNALLING_CRC_BITS) // 8   # 7
+assert SIGNALLING_BITS % 8 == 0, "signalling body must be whole bytes"
 
 # Frame counter width, which sets how large a gap the receiver can measure
 # unambiguously. 8 bits is 256 frames -- a minute or more at any profile's
@@ -259,10 +279,11 @@ class Header:
     payload it is attached to."""
 
     __slots__ = ("modcod", "codec", "flags", "il_phase", "rs_phase",
-                 "frame_count", "version")
+                 "frame_count", "version", "interleaver")
 
     def __init__(self, modcod: int, codec: int, il_phase: int, rs_phase: int,
-                 frame_count: int, flags: int = 0, version: int = WIRE_VERSION):
+                 frame_count: int, flags: int = 0, version: int = WIRE_VERSION,
+                 interleaver: int = 0):
         self.modcod = modcod
         self.codec = codec
         self.flags = flags
@@ -270,12 +291,16 @@ class Header:
         self.rs_phase = rs_phase
         self.frame_count = frame_count
         self.version = version
+        # Index into profiles.INTERLEAVER_CHOICES. Not the depth in seconds:
+        # the seconds are a table both ends already share, and an index is two
+        # bits where a duration would be far more.
+        self.interleaver = interleaver
 
     def __repr__(self) -> str:
         return (
             f"Header(modcod={self.modcod}, codec={CODEC_NAMES.get(self.codec, '?')}, "
             f"il={self.il_phase}, rs={self.rs_phase}, n={self.frame_count}, "
-            f"flags={self.flags:#x})"
+            f"depth={self.interleaver}, flags={self.flags:#x})"
         )
 
     def to_signalling(self) -> np.ndarray:
@@ -284,7 +309,8 @@ class Header:
         values = {
             "version": self.version, "codec": self.codec, "flags": self.flags,
             "il_phase": self.il_phase, "rs_phase": self.rs_phase,
-            "frame_count": self.frame_count,
+            "frame_count": self.frame_count, "interleaver": self.interleaver,
+            "reserved": 0,
         }
         bits: list[int] = []
         for name, width in SIGNALLING_FIELDS:
@@ -321,7 +347,8 @@ class Header:
             return None
         return cls(modcod=modcod, codec=values["codec"], flags=values["flags"],
                    il_phase=values["il_phase"], rs_phase=values["rs_phase"],
-                   frame_count=values["frame_count"], version=values["version"])
+                   frame_count=values["frame_count"], version=values["version"],
+                   interleaver=values["interleaver"])
 
 
 # --------------------------------------------------------------------------

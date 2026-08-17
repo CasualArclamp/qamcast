@@ -191,6 +191,20 @@
     <label>Roll-off</label>
     <select id="rolloff"></select>
 
+    <label>Interleaver depth</label>
+    <select id="interleave"></select>
+    <div class="note why">
+      The diversity delay: how far apart in time consecutive bytes of a
+      Reed-Solomon codeword are spread. Deeper rides out a longer fade &mdash;
+      a fade shorter than the depth costs each codeword a byte or two, which RS
+      puts back, while one longer than it takes out whole codewords. The price
+      is paid twice over, in the same currency: audio starts that many seconds
+      after you press Listen, and comes back that many seconds after every loss
+      of lock. This one setting does <b>not</b> need matching by hand &mdash; it
+      rides in the signalling block, so the receiver follows whatever is chosen
+      here, exactly as it follows the MODCOD.
+    </div>
+
     <div id="carrierRow" style="display:none">
       <div class="row">
         <div>
@@ -420,6 +434,7 @@ async function resolve(driver) {
       mode: $('mode').value,
       carriers: +$('carriers').value || 0,
       spacing: +$('spacing').value || 0,
+      interleave: +$('interleave').value || 0,
       sample_rate: +$('sampleRate').value,
       symbol_rate: +$('symbolRate').value,
       bitrate: readBitrate(),
@@ -454,6 +469,8 @@ async function resolve(driver) {
       set('pEcho', r.ofdm.delay_spread_ms.toFixed(2) + ' ms');
       set('pOffset', '±' + r.ofdm.max_offset_hz + ' Hz');
     }
+    fill($('interleave'), (r.interleave_choices || []).map(
+           v => ({value: v, text: v + ' s'})), r.interleave);
     set('lSps', isOfdm ? 'Transform' : 'Samples/symbol');
     set('ofdmNote', isOfdm ? r.ofdm.describe : ' ');
     $('linkKey').value = r.link_key || '-';
@@ -636,6 +653,9 @@ $('rolloff').onchange    = () => { deviate(); resolve('rolloff'); };
 // departure from it, so the preset name still describes the link afterwards.
 $('carriers').onchange   = () => resolve('carriers');
 $('spacing').onchange    = () => resolve('spacing');
+// No deviate(): the depth travels in the signalling rather than being part of
+// the profile, so the preset name still describes the link after it moves.
+$('interleave').onchange = () => resolve('interleave');
 
 // A text box fires `change` on blur, which would leave the panels describing
 // the old number while the box shows the new one. Enter solves immediately;
@@ -927,6 +947,7 @@ $('start').onclick = async () => {
     mode: $('mode').value,
     carriers: +$('carriers').value || 0,
     spacing: +$('spacing').value || 0,
+    interleave: +$('interleave').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,
     rolloff: +$('rolloff').value,

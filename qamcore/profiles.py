@@ -54,17 +54,60 @@ class Modcod:
     def rs_rate(self) -> float:
         return self.rs_k / RS_N
 
+    def modulation_for(self, family: str = "qam") -> str:
+        """What this rung's constellation is called on that point set.
+
+        A MODCOD is a bits-per-symbol and a code rate; which point set those
+        bits land on is the profile's business, not the rung's. So the name
+        needs the family to be right, and "16QAM" on an APSK link is simply
+        the wrong name for what is being transmitted.
+        """
+        try:
+            return MODULATION_NAMES[family][self.bits_per_symbol]
+        except KeyError:
+            raise ValueError(
+                f"no name for {self.bits_per_symbol}-bit symbols on {family!r}"
+            ) from None
+
+    def name_for(self, family: str = "qam") -> str:
+        return f"{self.modulation_for(family)} {self.conv_num}/{self.conv_den}"
+
+    def label_for(self, family: str = "qam") -> str:
+        return f"MODCOD{self.index:02d} {self.name_for(family)}"
+
+    # The square-QAM spellings, for the places that genuinely have no profile
+    # to hand -- the CLI's argument list and the ladder printout. Anything
+    # describing a live link has a profile and should use the _for forms.
     @property
     def modulation(self) -> str:
-        return {2: "QPSK", 4: "16QAM", 6: "64QAM", 8: "256QAM"}[self.bits_per_symbol]
+        return self.modulation_for()
 
     @property
     def name(self) -> str:
-        return f"{self.modulation} {self.conv_num}/{self.conv_den}"
+        return self.name_for()
 
     def __str__(self) -> str:
-        return f"MODCOD{self.index:02d} {self.name}"
+        return self.label_for()
 
+
+# What each constellation size is called, per point set. Keyed by the family
+# names in constellation.py, which is what ``Profile.constellation_family``
+# returns -- spelled out here rather than imported so this module stays free of
+# the numeric stack it would otherwise pull in at import time.
+#
+# The bottom rung keeps its name on both: a single ring of four points is QPSK
+# however it is drawn, and the APSK construction produces exactly that at two
+# bits per symbol. Above it the layouts really do differ.
+MODULATION_NAMES = {
+    "qam": {2: "QPSK", 4: "16QAM", 6: "64QAM", 8: "256QAM"},
+    "apsk": {2: "QPSK", 4: "16APSK", 6: "64APSK", 8: "256APSK"},
+}
+
+# Both spellings back to bits per symbol, so a name arriving from a UI or a
+# command line is understood whichever family produced it.
+BITS_BY_MODULATION = {name: bits
+                      for table in MODULATION_NAMES.values()
+                      for bits, name in table.items()}
 
 RS_N = 255  # Reed-Solomon codeword length, fixed across the ladder
 
@@ -724,6 +767,33 @@ PROFILES.update({
 # receiver rather than chosen for tidiness.
 DEFAULT_PROFILE = "FM44"
 
+
+def default_for_mode(mode: str) -> str:
+    """The preset a page should land on when it switches to ``mode``.
+
+    Not the first of the filtered list, which is what this used to be. The
+    list is sorted by descending card rate, so the first entry is always the
+    96 kHz one -- and a mode selector that drops a 44.1 kHz card onto a 96 kHz
+    geometry the moment it is touched is not a cosmetic mismatch. The receiver
+    then false-syncs on noise, reports a carrier offset of a few hundred hertz
+    that changes every frame, and draws a constellation that visibly spins.
+
+    So: the measured default when this mode has it, otherwise the profile on
+    the same card rate, and only then whatever is left.
+    """
+    same = [p for p in PROFILES.values() if p.mode == mode]
+    if not same:
+        return "CUSTOM"
+    for p in same:
+        if p.name == DEFAULT_PROFILE:
+            return p.name
+    want = PROFILES[DEFAULT_PROFILE].sample_rate
+    for p in same:
+        if p.sample_rate == want:
+            return p.name
+    return same[0].name
+
+
 # --------------------------------------------------------------------------
 # APSK profiles
 # --------------------------------------------------------------------------
@@ -953,7 +1023,7 @@ def symbol_rate_for_bitrate(sample_rate: int, bitrate: int, modcod: Modcod,
 def plan(sample_rate: int, symbol_rate: int, modcod: Modcod,
          rolloff: float = 0.25, pilot_spacing: int = 64,
          carrier: float | None = None,
-         frame_symbols: int | None = None) -> dict:
+         frame_symbols: int | None = None, mode: str = "sc") -> dict:
     """Everything the UI shows for one combination of settings.
 
     ``carrier`` matters because it decides where the occupied band sits, and
@@ -969,8 +1039,10 @@ def plan(sample_rate: int, symbol_rate: int, modcod: Modcod,
     and acquisition time quoted beside it were wrong to match.
     """
     p = make_profile(sample_rate, symbol_rate, rolloff, carrier=carrier,
-                     pilot_spacing=pilot_spacing, frame_symbols=frame_symbols)
+                     pilot_spacing=pilot_spacing, frame_symbols=frame_symbols,
+                     mode=mode)
     cap = p.capacity(modcod)
+    family = p.constellation_family
     lo, hi = p.band
     return {
         "sample_rate": sample_rate,
@@ -985,9 +1057,10 @@ def plan(sample_rate: int, symbol_rate: int, modcod: Modcod,
         "frame_symbols": p.frame_symbols,
         "frame_ms": round(p.frame_duration * 1000),
         "pilot_spacing": pilot_spacing,
+        "mode": p.mode,
         "modcod": modcod.index,
-        "modcod_name": str(modcod),
-        "modulation": modcod.modulation,
+        "modcod_name": modcod.label_for(family),
+        "modulation": modcod.modulation_for(family),
         "code_rate": f"{modcod.conv_num}/{modcod.conv_den}",
         "rs": f"{RS_N},{modcod.rs_k}",
         "required_evm_db": modcod.required_evm_db,
@@ -1048,9 +1121,10 @@ def describe(profile: Profile) -> str:
         "  idx  modulation      RS       net bps   min EVM  interleave",
         "  ---  --------------  -------  --------  -------  ----------",
     ]
+    family = profile.constellation_family
     for m, rate in profile.usable_bitrates():
         out.append(
-            f"  {m.index:>3}  {m.name:<14}  {RS_N},{m.rs_k}  "
+            f"  {m.index:>3}  {m.name_for(family):<14}  {RS_N},{m.rs_k}  "
             f"{rate:>8.0f}  {m.required_evm_db:>6.1f}  "
             f"{interleaver_delay(profile, m):>5.1f} s  "
             f"{interleaver_geometry(profile, m)[0]}x{interleaver_geometry(profile, m)[1]}"

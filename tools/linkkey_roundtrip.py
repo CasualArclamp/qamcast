@@ -36,6 +36,21 @@ def check(label: str, page: dict, verbose: bool) -> bool:
         print(f"BAD {label:26s} no link key in the solve response")
         return False
 
+    # The mode the page asked for is the mode it must get, from both paths.
+    # This is the check that was missing: with a named preset the family rides
+    # along on the preset itself, so everything looked fine, while a CUSTOM
+    # page carrying mode=apsk silently built square QAM -- wrong key, wrong
+    # transmission, wrong demodulator, and nothing said so.
+    want = page.get("mode") or "sc"
+    if not sent.is_ofdm and sent.mode != want:
+        print(f"BAD {label:26s} page asked for {want!r}, Start builds "
+              f"{sent.mode!r}")
+        return False
+    if not sent.is_ofdm and plan.get("mode") != want:
+        print(f"BAD {label:26s} page asked for {want!r}, the panel describes "
+              f"{plan.get('mode')!r}")
+        return False
+
     # exactly what rx.py does with a pasted key, then what Start sends
     read = rx.Receiver().read_link_key({"key": key})
     if read.get("error"):
@@ -66,7 +81,7 @@ def main() -> int:
     for name, p in profiles.PROFILES.items():
         counts = profiles.OFDM_CARRIER_CHOICES if p.is_ofdm else (0,)
         for c in counts:
-            page = {"profile": name, "carriers": c,
+            page = {"profile": name, "carriers": c, "mode": p.mode,
                     "sample_rate": p.sample_rate, "symbol_rate": p.symbol_rate,
                     "rolloff": p.rolloff}
             ok &= check(f"{name}/{c}" if c else name, page, verbose)
@@ -75,15 +90,21 @@ def main() -> int:
     # Hand-dialled links, including three whose card rate, symbol rate and
     # roll-off are a preset's exactly. Those are the ones a key that named a
     # preset instead of a link would get wrong.
+    #
+    # Each is run on both point sets. A CUSTOM page is the only place the
+    # family has nowhere to hide -- there is no preset carrying it -- so it is
+    # the only place the mode has to travel from the page to the server on its
+    # own, and it is exactly where it used to be dropped.
     for label, sr, sym, ro in (("custom = RADIO's numbers", 48000, 9600, 0.25),
                                ("custom = WIDE's numbers", 96000, 32000, 0.20),
                                ("custom = ACOUSTIC's numbers", 48000, 8000, 0.30),
                                ("custom, unlike any preset", 48000, 12000, 0.25),
                                ("custom on a 44.1 kHz card", 44100, 11025, 0.35)):
-        page = {"profile": "CUSTOM", "carriers": 0, "sample_rate": sr,
-                "symbol_rate": sym, "rolloff": ro}
-        ok &= check(label, page, verbose)
-        n += 1
+        for mode in ("sc", "apsk"):
+            page = {"profile": "CUSTOM", "carriers": 0, "sample_rate": sr,
+                    "symbol_rate": sym, "rolloff": ro, "mode": mode}
+            ok &= check(f"{label} [{mode}]", page, verbose)
+            n += 1
 
     print(f"\n{n} links copied across by key")
     print("PASS" if ok else "FAILURES")

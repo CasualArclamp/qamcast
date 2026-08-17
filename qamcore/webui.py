@@ -61,6 +61,14 @@ def default_profile() -> str:
     return P.DEFAULT_PROFILE
 
 
+def default_profiles() -> dict[str, str]:
+    """The preset each mode selector should land on. See default_for_mode."""
+    from . import profiles as P
+
+    modes = {p.mode for p in P.PROFILES.values()}
+    return {m: P.default_for_mode(m) for m in modes}
+
+
 def modcod_list() -> list[dict]:
     """Every modulation and code rate the header can express."""
     from . import profiles as P
@@ -68,6 +76,10 @@ def modcod_list() -> list[dict]:
     return [{
         "index": m.index,
         "modulation": m.modulation,
+        # Both spellings, because the dropdown is built once at page load and
+        # the mode selector can move afterwards. A rung is the same rung
+        # either way -- only its constellation's name changes.
+        "modulations": {f: m.modulation_for(f) for f in P.MODULATION_NAMES},
         "code_rate": f"{m.conv_num}/{m.conv_den}",
         "bits_per_symbol": m.bits_per_symbol,
         "rs": m.rs_k,

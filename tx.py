@@ -166,7 +166,8 @@ class Transmitter:
                   cfg.get("device", ""), passthrough),
             daemon=True)
         self._thread.start()
-        return {"ok": True, "modcod": str(modcod),
+        return {"ok": True,
+                "modcod": modcod.label_for(profile.constellation_family),
                 "passthrough": passthrough is not None,
                 "detected": self._probe.get("label") if self._probe else None}
 
@@ -349,6 +350,7 @@ class Transmitter:
                     "sample_rates": webui.sample_rates(),
                     "carrier_choices": list(profiles.OFDM_CARRIER_CHOICES),
                     "default_profile": webui.default_profile(),
+                    "default_profiles": webui.default_profiles(),
                     "symbol_rates": {str(r): webui.symbol_rates(r)
                                      for r in webui.sample_rates()}}
         if cmd == "solve":
@@ -531,12 +533,12 @@ class Transmitter:
             # An OFDM profile has no symbol rate to quote -- the one on the
             # profile is the single-carrier one it borrowed its band from, and
             # printing that would describe a signal nobody is transmitting.
-            "footprint": f"{str(modcod)} \u00b7 "
+            "footprint": f"{modcod.label_for(profile.constellation_family)} \u00b7 "
                          + (f"{profile.geometry.carriers} carriers"
                             if profile.is_ofdm
                             else f"{profile.symbol_rate} Bd")
                          + f" \u00b7 {lo/1000:.1f}-{hi/1000:.1f} kHz",
-            "modcod": str(modcod),
+            "modcod": modcod.label_for(profile.constellation_family),
             # What this rung needs to be received. Quoted as Es/N0 but
             # measured as EVM, which is the same number on a link whose only
             # impairment is noise and a pessimistic one otherwise -- and it is
@@ -648,7 +650,10 @@ def build_profile(cfg: dict) -> profiles.Profile:
     )
 
 
-BITS = {"QPSK": 2, "16QAM": 4, "64QAM": 6, "256QAM": 8}
+# Both spellings, so "16APSK" from an APSK page and "16QAM" from a QAM one
+# both name the same rung. The constellation a MODCOD's bits land on is the
+# profile's business; the rung itself is the same either way.
+BITS = profiles.BITS_BY_MODULATION
 
 
 def pick_modcod(cfg: dict, profile: profiles.Profile, bitrate: int) -> profiles.Modcod:
@@ -777,8 +782,8 @@ def _solve_ofdm(profile: profiles.Profile, msg: dict) -> dict:
         "frame_ms": round(geo.frame_duration * 1000),
         "pilot_spacing": profile.pilot_spacing,
         "modcod": modcod.index,
-        "modcod_name": str(modcod),
-        "modulation": modcod.modulation,
+        "modcod_name": modcod.label_for(profile.constellation_family),
+        "modulation": modcod.modulation_for(profile.constellation_family),
         "code_rate": f"{modcod.conv_num}/{modcod.conv_den}",
         "rs": f"{profiles.RS_N},{modcod.rs_k}",
         "required_evm_db": modcod.required_evm_db,
@@ -834,10 +839,14 @@ def solve(msg: dict) -> dict:
             return {"error": str(exc)}
         if keyed.is_ofdm:
             return _solve_ofdm(keyed, {**msg, "carriers": keyed.ofdm_carriers})
+        # Including the mode. The key carries the constellation family, and it
+        # is the source of truth while it is in force -- reading that one field
+        # off the page's selector instead would let a stale dropdown describe
+        # the link as QAM while the key, and Start, build APSK.
         msg = {**msg, "profile": "CUSTOM", "sample_rate": keyed.sample_rate,
                "symbol_rate": keyed.symbol_rate, "rolloff": keyed.rolloff,
                "carrier": keyed.carrier, "pilot_spacing": keyed.pilot_spacing,
-               "frame_symbols": keyed.frame_symbols}
+               "frame_symbols": keyed.frame_symbols, "mode": keyed.mode}
 
     # An OFDM profile is not a symbol rate and a roll-off, so none of the
     # solving below applies to it: the geometry is fixed by the profile and
@@ -1021,7 +1030,7 @@ def solve(msg: dict) -> dict:
         if not msg.get("frame_symbols"):
             frame_symbols = None
     out = profiles.plan(sample_rate, symbol_rate, modcod, rolloff, pilot,
-                        carrier, frame_symbols)
+                        carrier, frame_symbols, mode=sc_mode)
     out["bitrate"] = max(0, bitrate)
     out["symbol_rates"] = rates
     # Encoded from the profile the plan actually describes, not from the three
@@ -1198,10 +1207,14 @@ def main() -> int:
                     help="OFDM subcarriers; fewer rides out frequency drift, "
                          "more rides out echoes. Must match at both ends.")
     ap.add_argument("--pilot-spacing", type=int, default=64, choices=[32, 64, 128])
+    ap.add_argument("--mode", default="sc", choices=["sc", "apsk"],
+                    help="constellation family for --profile CUSTOM: square "
+                         "QAM, or APSK rings for a compressed amplifier. The "
+                         "named presets carry their own.")
     ap.add_argument("--modcod", default=None,
                     help="MODCOD index; omit to choose from the bitrate")
     ap.add_argument("--modulation", default=None,
-                    choices=["QPSK", "16QAM", "64QAM", "256QAM"])
+                    choices=sorted(profiles.BITS_BY_MODULATION))
     ap.add_argument("--code-rate", default=None, help="e.g. 3/4")
     ap.add_argument("--codec", default="opus", choices=["opus", "aac"])
     ap.add_argument("--bitrate", default="128k")
@@ -1280,7 +1293,7 @@ def main() -> int:
         spec = {"profile": a.profile, "sample_rate": a.sample_rate,
                 "symbol_rate": a.symbol_rate, "rolloff": a.rolloff,
                 "carrier": a.carrier, "carriers": a.carriers,
-                "pilot_spacing": a.pilot_spacing,
+                "pilot_spacing": a.pilot_spacing, "mode": a.mode,
                 "modcod": a.modcod, "modulation": a.modulation,
                 "code_rate": a.code_rate}
         try:

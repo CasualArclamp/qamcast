@@ -125,12 +125,7 @@
     <select id="symbolRate"></select>
 
     <label>Roll-off</label>
-    <select id="rolloff">
-      <option value="0.15">0.15</option>
-      <option value="0.2">0.20</option>
-      <option value="0.25" selected>0.25</option>
-      <option value="0.35">0.35</option>
-    </select>
+    <select id="rolloff"></select>
 
     <div id="carrierRow" style="display:none">
       <label>Subcarriers</label>
@@ -235,6 +230,11 @@ async function resolve() {
   const r = await control({
     cmd: 'solve', driver: 'symbol_rate', profile: $('preset').value,
     link_key: KEY,
+    // The demodulator has to be told which point set to slice against: it is
+    // not something the receiver can work out from the air, and getting it
+    // wrong costs every frame -- sync holds, the constellation looks clean,
+    // and nothing ever locks.
+    mode: $('mode').value,
     carriers: +$('carriers').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,
@@ -279,8 +279,12 @@ function applyPreset() {
   if (!custom) {
     const p = META.profiles.find(x => x.name === name);
     if (p) {
-      $('sampleRate').value = p.sample_rate;
-      $('rolloff').value = String(p.rolloff);
+      // setSelect, not a bare assignment: a value the list does not hold
+      // leaves a <select> on "", which reads back as 0 and gets replaced by a
+      // default further down. That is how a 0.30 roll-off used to be planned
+      // and requested at 0.25.
+      setSelect($('sampleRate'), p.sample_rate);
+      setSelect($('rolloff'), p.rolloff);
       fill($('symbolRate'), (META.symbol_rates[p.sample_rate] || []).map(v => ({value: v, text: v + ' Bd'})), p.symbol_rate);
     }
   }
@@ -294,19 +298,34 @@ control({cmd:'profiles'}).then(r => {
   META = r;
   fillPresets($('mode').value);
   fill($('sampleRate'), r.sample_rates.map(v => ({value: v, text: (v/1000) + ' kHz'})), 48000);
+  // Built from the profiles rather than written into the HTML, exactly as on
+  // the transmit page. A preset whose roll-off is missing from the list cannot
+  // be selected into it, and the receiver then listens for a signal shaped
+  // differently from the one on air.
+  const rolls = [...new Set([0.15, 0.2, 0.25, 0.3, 0.35]
+                            .concat(r.profiles.map(p => p.rolloff)))].sort((a, b) => a - b);
+  fill($('rolloff'), rolls.map(v => ({value: v, text: v.toFixed(2)})), 0.25);
   applyPreset();
 });
 
 // Presets filtered to the selected mode, so the list stays short and a mode
 // change cannot leave a profile of the wrong kind selected.
-function fillPresets(want) {
+function fillPresets(want, extra) {
   const list = META.profiles.filter(p => (p.mode || 'sc') === want);
-  fill($('preset'),
-       [{value:'CUSTOM', text:'Custom - set everything by hand'}]
-       .concat(list.map(p => ({value: p.name, text: p.label}))),
-       // The measured default when this mode has it, else the first listed.
-       list.some(p => p.name === META.default_profile) ? META.default_profile
-         : (list.length ? list[0].name : 'CUSTOM'));
+  // Custom is a single-carrier idea -- a symbol rate, a roll-off and a carrier
+  // -- and an OFDM link has none of the three. `extra` is how a link key that
+  // matches no preset still gets a truthful entry to sit on.
+  const items = (extra ? [extra]
+                 : want === 'ofdm' || !list.length ? []
+                 : [{value:'CUSTOM', text:'Custom - set everything by hand'}])
+      .concat(list.map(p => ({value: p.name, text: p.label})));
+  // From the server, so both pages land on the same profile. Not the first of
+  // the list: that is sorted by descending card rate, so switching mode used
+  // to drop a 44.1 kHz card onto a 96 kHz geometry -- which does not fail
+  // cleanly. The receiver false-syncs on noise and the constellation spins.
+  fill($('preset'), items,
+       (META.default_profiles || {})[want]
+         || (list.length ? list[0].name : 'CUSTOM'));
 }
 
 // See the note in tx.html: deviating from a preset must show as Custom, or
@@ -342,12 +361,28 @@ async function applyKey() {
   if (r.error) { set('keyNote', r.error); $('keyNote').className = 'note warn'; return; }
   const L = r.link;
   KEY = raw;
+  // The mode first, and from the key rather than from whatever the selector
+  // happens to be showing. It decides which point set the demodulator slices
+  // against, and it also decides which presets are listed -- so applying an
+  // APSK key to a page still filtered to QAM found no matching preset, fell
+  // back to Custom, and left the selector claiming QAM over an APSK link.
+  $('mode').value = L.mode || 'sc';        // assigning does not fire onchange
+  fillPresets($('mode').value);
   // An OFDM key labels itself with its carrier count -- OFDM48-24 -- and the
   // dropdown lists the family. Fall back to the family so the box names
   // something the operator recognises, with the count in its own control.
   const has = n => n && [...$('preset').options].some(o => o.value === n);
-  $('preset').value = [L.profile, (L.profile || '').split('-')[0]]
-      .find(has) || 'CUSTOM';
+  const match = [L.profile, (L.profile || '').split('-')[0]].find(has);
+  if (match) {
+    $('preset').value = match;
+  } else {
+    // No preset describes this link, which is entirely allowed -- the key is
+    // the source of truth and says so. Rebuilt with an entry that names it,
+    // rather than shown as "Custom", which under OFDM is not even offered.
+    fillPresets($('mode').value, {value: 'CUSTOM',
+                                  text: 'from the link key - not a preset'});
+    $('preset').value = 'CUSTOM';
+  }
   const custom = $('preset').value === 'CUSTOM';
   $('sampleRate').disabled = !custom;
   $('rolloff').disabled = !custom;
@@ -356,6 +391,10 @@ async function applyKey() {
     fill($('carriers'), META.carrier_choices.map(
            c => ({value: c, text: c + ' carriers'})), L.carriers);
   } else {
+    // Cleared rather than left: the row is hidden on a single-carrier link,
+    // so a count left over from the last OFDM key is invisible and still
+    // travels in every payload.
+    $('carriers').value = '';
     setSelect($('rolloff'), L.rolloff);
     fill($('symbolRate'), [{value: L.symbol_rate, text: L.symbol_rate + ' Bd'}],
          L.symbol_rate);
@@ -506,6 +545,7 @@ $('start').onclick = async () => {
   const r = await control({cmd:'start',
     profile: $('preset').value,
     link_key: KEY,
+    mode: $('mode').value,
     carriers: +$('carriers').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,

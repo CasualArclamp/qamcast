@@ -205,6 +205,7 @@ class Receiver:
                     "sample_rates": webui.sample_rates(),
                     "carrier_choices": list(profiles.OFDM_CARRIER_CHOICES),
                     "default_profile": webui.default_profile(),
+                    "default_profiles": webui.default_profiles(),
                     "symbol_rates": {str(r): webui.symbol_rates(r)
                                      for r in webui.sample_rates()}}
         if cmd == "solve":
@@ -398,7 +399,8 @@ class Receiver:
                          + f" · {lo/1000:.1f}-{hi/1000:.1f} kHz",
             "locked": locked,
             "corr": r.corr_peak if r else None,
-            "modcod": str(modcod) if modcod else None,
+            "modcod": (modcod.label_for(profile.constellation_family)
+                       if modcod else None),
             # What this rung needs, so the page can grade the measured figure
             # against it rather than against a number picked for the display.
             "required_evm_db": modcod.required_evm_db if modcod else None,
@@ -723,6 +725,13 @@ def main() -> int:
                     choices=list(profiles.OFDM_CARRIER_CHOICES),
                     help="OFDM subcarriers; must match the transmitter")
     ap.add_argument("--pilot-spacing", type=int, default=64, choices=[32, 64, 128])
+    ap.add_argument("--mode", default="sc", choices=["sc", "apsk"],
+                    help="constellation family for --profile CUSTOM; must "
+                         "match the transmitter. The named presets carry "
+                         "their own.")
+    ap.add_argument("--link-key", default=None,
+                    help="the transmitter's key, which sets every field above "
+                         "at once and overrides them")
     ap.add_argument("--device", default="", help="input device index, or 'wav'")
     ap.add_argument("--output", default="", help="output device index, or 'none'")
     ap.add_argument("--input", dest="infile", default=None, help="decode a wav file")
@@ -759,20 +768,22 @@ def main() -> int:
         # is running shows "connected" rather than sitting on "connecting".
         rx.telemetry.publish(rx._state)
 
-    if a.profile:
+    if a.profile or a.link_key:
         device = "wav" if a.infile else a.device
         res = rx.start({"profile": a.profile, "device": device,
                         "outdev": a.output, "record": a.record,
+                        "link_key": a.link_key,
                         "sample_rate": a.sample_rate, "symbol_rate": a.symbol_rate,
                         "rolloff": a.rolloff, "carrier": a.carrier,
-                        "carriers": a.carriers,
+                        "carriers": a.carriers, "mode": a.mode,
                         "pilot_spacing": a.pilot_spacing})
         if res.get("error"):
             print(res["error"], file=sys.stderr)
             return 1
-        print(f"listening on {a.profile}")
+        print(f"listening on {a.link_key or a.profile}")
     elif a.no_ui:
-        print("nothing to do: give --profile or drop --no-ui", file=sys.stderr)
+        print("nothing to do: give --profile, --link-key, or drop --no-ui",
+              file=sys.stderr)
         return 1
 
     try:

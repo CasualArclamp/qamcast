@@ -402,6 +402,11 @@ async function resolve(driver) {
       locks: [...LOCKS],
       codec: $('codec').value,
       profile: $('preset').value,     // so the pilot spacing matches Start's
+      // Load-bearing, not decoration. A named preset carries its own family,
+      // but the moment the solver moves the symbol rate the preset drops to
+      // Custom -- and without this the link silently reverts to square QAM,
+      // taking the link key and everything the panel says with it.
+      mode: $('mode').value,
       carriers: +$('carriers').value || 0,
       sample_rate: +$('sampleRate').value,
       symbol_rate: +$('symbolRate').value,
@@ -439,8 +444,7 @@ async function resolve(driver) {
     fill($('symbolRate'), isOfdm
          ? [{value: r.symbol_rate, text: r.symbol_rate + ' sym/s'}]
          : r.symbol_rates.map(v => ({value: v, text: v + ' Bd'})), r.symbol_rate);
-    fill($('modulation'), [...new Set(META.modcods.map(m => m.modulation))]
-         .map(m => ({value: m, text: m})), r.modulation);
+    fill($('modulation'), modNames().map(m => ({value: m, text: m})), r.modulation);
     fill($('codeRate'), [...new Set(META.modcods.map(m => m.code_rate))]
          .map(c => ({value: c, text: c})), r.code_rate);
     // Only rewrite the box if the solver actually moved the number. Restating
@@ -516,16 +520,34 @@ async function applyPreset() {
   if (released) set('pWarn', released);
 }
 
+// A MODCOD is a bits-per-symbol and a code rate; which point set those bits
+// land on belongs to the profile. So the names in this dropdown follow the
+// mode, and are read at the moment the list is built rather than fixed at
+// page load -- otherwise an APSK link is labelled "16QAM", which is the wrong
+// name for what is going on air.
+function modFamily() { return $('mode').value === 'apsk' ? 'apsk' : 'qam'; }
+function modNames() {
+  const f = modFamily();
+  return [...new Set(META.modcods.map(m => (m.modulations || {})[f]
+                                           || m.modulation))];
+}
+
 // Presets filtered to the selected mode, so the list stays short and a mode
 // change cannot leave a profile of the wrong kind selected.
 function fillPresets(want) {
   const list = META.profiles.filter(p => (p.mode || 'sc') === want);
-  fill($('preset'),
-       [{value:'CUSTOM', text:'Custom - set everything by hand'}]
-       .concat(list.map(p => ({value: p.name, text: p.label}))),
-       // The measured default when this mode has it, else the first listed.
-       list.some(p => p.name === META.default_profile) ? META.default_profile
-         : (list.length ? list[0].name : 'CUSTOM'));
+  // Custom is a single-carrier idea -- a symbol rate, a roll-off and a carrier
+  // -- and an OFDM link has none of the three. Offering it there produced a
+  // single-carrier plan underneath a panel still labelled OFDM.
+  const items = (want === 'ofdm' || !list.length ? []
+                 : [{value:'CUSTOM', text:'Custom - set everything by hand'}])
+      .concat(list.map(p => ({value: p.name, text: p.label})));
+  // From the server, so both pages land on the same profile. Not the first of
+  // the list: that is sorted by descending card rate, so every mode change
+  // used to jump to the 96 kHz profile.
+  fill($('preset'), items,
+       (META.default_profiles || {})[want]
+         || (list.length ? list[0].name : 'CUSTOM'));
 }
 
 control({cmd:'profiles'}).then(r => {
@@ -544,8 +566,7 @@ control({cmd:'profiles'}).then(r => {
     text: v.toFixed(2) + (v === rolls[0] ? ' - narrowest'
                         : v === rolls[rolls.length-1] ? ' - most forgiving' : ''),
   })), 0.25);
-  const mods = [...new Set(r.modcods.map(m => m.modulation))];
-  fill($('modulation'), mods.map(m => ({value: m, text: m})), '16QAM');
+  fill($('modulation'), modNames().map(m => ({value: m, text: m})), '16QAM');
   const codes = [...new Set(r.modcods.map(m => m.code_rate))];
   fill($('codeRate'), codes.map(c => ({value: c, text: c})), '3/4');
   showBitrate(64000);
@@ -874,6 +895,7 @@ $('start').onclick = async () => {
     passthrough: $('passthrough').checked,
     bitrate: readBitrate(),
     profile: $('preset').value,
+    mode: $('mode').value,
     carriers: +$('carriers').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,

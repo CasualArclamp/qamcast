@@ -109,8 +109,8 @@ python tools/rates.py WIDE
 ## Link keys
 
 Card rate, symbol rate, roll-off, carrier frequency, pilot spacing, frame
-length and — in OFDM — the subcarrier count cannot travel in the header. The
-frame is
+length, the constellation family — QAM or APSK — and, in OFDM, the subcarrier
+count cannot travel in the header. The frame is
 
 ```
 [ preamble ][ MODCOD codeword ][ data ]
@@ -356,6 +356,15 @@ So APSK is shipped, complete and tested, and QAM remains the default. It is
 worth trying on a real amplifier — the model here is a model, and a path whose
 nonlinearity is a hard clipper in an audio stage rather than a smooth RF
 compression would weigh it differently — but on this simulator it loses.
+
+**The family has to match at both ends**, exactly like the profile, and it has
+a distinctive failure. Nothing about it travels in the header, so a receiver
+told the wrong one still finds the preamble, still tracks the carrier and still
+draws a clean constellation — the preamble, the pilots and the MODCOD codeword
+are all family-independent — and simply never locks, because the payload is
+being sliced against the wrong point set. Sync 0.99 with no lock and no header
+errors moving is that. It is what the link key exists to prevent; the Mode
+dropdown is a convenience for setting the two ends by hand.
 
 ## MODCOD ladder
 

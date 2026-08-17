@@ -122,12 +122,15 @@ class OfdmGeometry:
         The estimator fits the pilots' common phase against symbol index, so
         the advance from one symbol to the next has to stay under half a turn
         -- past that the unwrap folds it back and reports the wrong offset
-        confidently. The bound is one over twice the symbol duration, and since
-        the symbol lengthens with the carrier count this is the other side of
-        the trade the count sets: 333 Hz at 24 carriers on a 48 kHz card, 22 Hz
-        at 384. Measured: OFDMRADIO at 384 carriers pulls in 12.5 Hz and gets
-        no lock at all against the 15 Hz `radio` preset, while every narrower
-        geometry on the same band rides straight through it.
+        confidently. The bound is one over twice the symbol duration, so it
+        falls as the spacing narrows: 178 Hz at 400 Hz spacing on a 48 kHz
+        card, 11 Hz at 25 Hz spacing.
+
+        This is the cliff, not a gradual softening, and it is what stops the
+        spacing being narrowed indefinitely for echo tolerance. Measured
+        through the `radio` preset, which drifts 15 Hz: every spacing from
+        400 Hz down to 50 Hz decodes 35 or more frames in 40, and 25 Hz --
+        11 Hz of tolerance against 15 Hz of drift -- decodes none at all.
         """
         return 0.5 / self.symbol_duration
 
@@ -213,28 +216,32 @@ def geometry(sample_rate: int, band_lo: float, band_hi: float, fft: int = 512,
 
 
 # --------------------------------------------------------------------------
-# Fitting a wanted number of carriers into a wanted band
+# Spacing and carrier count
 # --------------------------------------------------------------------------
 #
-# The other way round from `geometry` above, and the more useful one to operate:
-# say how many carriers you want and let the transform size follow, rather than
-# picking a transform size and counting what lands inside the band.
+# Two numbers, two separate jobs:
 #
-# It is the same one dial an OFDM design has, seen from the end that means
-# something. For a band that is already fixed, the carrier count *is* the
-# subcarrier spacing, and the spacing sets both halves of the trade at once:
+#   **spacing** is the mode. It alone decides how much echo the prefix absorbs
+#       and how much carrier offset the estimator can pull in, and it is the
+#       only thing that decides either.
+#   **carrier count** is the bandwidth, and therefore the bitrate. The block is
+#       count x spacing wide. Halving the count halves the occupied width and
+#       halves the payload rate, and changes nothing else.
 #
-#   more carriers -> narrower spacing -> longer symbol -> longer prefix for the
-#       same overhead -> more echo absorbed, and less room for frequency error
-#       before a neighbour's energy lands on top of yours
-#   fewer carriers -> wider spacing -> a frequency offset is a smaller fraction
-#       of it -> shrugs off drift, and the prefix shrinks with the symbol until
-#       there is no echo tolerance left to speak of
+# This used to be one dial doing both jobs badly: the band was fixed and the
+# count divided it, so the count *was* the spacing -- it moved echo tolerance
+# up while moving offset tolerance down, and left the throughput alone, which
+# is the one thing an operator would expect a "how many carriers" control to
+# change. Bandwidth could not be traded for ruggedness at all, and that trade
+# turns out to be the valuable one. See tools/spacing.py: the `reverb` channel,
+# 6 ms of delay spread and documented in the README as the case this modem
+# fails, decodes 38/40 at 25 Hz spacing on 384 carriers -- 9.6 kHz of band
+# instead of 19.2. The old dial could not get there from a fixed band.
 #
-# What does *not* move much is the throughput, and that is not a coincidence:
-# the payload rate is set by the occupied bandwidth, not by how finely it is
-# sliced. Measured across 24 to 384 carriers in the same band the payload
-# symbol rate varies by about 10%, all of it pilot overhead at the narrow end.
+# Spectral efficiency barely moves across the whole range -- 4.91 bps/Hz at
+# 300 Hz down to 4.34 at 25 Hz, twelve per cent for a sixteen-fold change in
+# spacing -- so the spacing is chosen for the channel rather than for the rate,
+# and the cost of buying echo tolerance is much lower than it looks.
 
 # Frame length aimed for, seconds. Held roughly constant across carrier counts
 # on purpose. The preamble overhead, the acquisition delay and the interval
@@ -259,58 +266,74 @@ MIN_CARRIERS = 24
 MIN_FRAME_SYMBOLS = 12
 
 
-def fit_carriers(sample_rate: int, band_lo: float, band_hi: float,
-                 carriers: int) -> tuple[int, int, int]:
-    """Smallest transform giving exactly ``carriers`` bins inside the band.
+# Spacings are nominal. The transform has to be a whole number of samples, so
+# the delivered spacing is sample_rate / round(sample_rate / nominal) and comes
+# out within a fraction of a hertz. Both ends derive it the same way from the
+# same two numbers, so they agree exactly; the nominal figure is a label.
+#
+# What the spacing dial offers, Hz. The span is set at one end by there being
+# no point going wider -- see the measured table in tools/spacing.py, where
+# 300 Hz already absorbs less echo than the single-carrier equaliser it is
+# supposed to beat -- and at the other by the carrier-offset estimator, which
+# is what fails first as the symbol lengthens.
+OFDM_SPACING_CHOICES = (400, 300, 200, 150, 100, 75, 50, 25)
 
-    Exactly, not approximately: the count is what the operator selects and what
-    both ends must agree on, so it is the input rather than something to be
-    reported back afterwards. The transform size is whatever delivers it, which
-    is generally not a power of two -- a 24-carrier fit at 48 kHz wants a
-    64-point transform and a 32-carrier fit wants an 82-point one. Nothing here
-    needs a power of two; these transforms are a few hundred points and run
-    twenty times a frame.
 
-    Returns ``(fft, bin_lo, bin_hi)``. The occupied bins are centred in
-    whatever the band has room for, so the signal never spills past the edges
-    the profile asked for.
+def fft_for_spacing(sample_rate: int, spacing_hz: float) -> int:
+    """Transform size delivering the nearest spacing to the one asked for."""
+    if spacing_hz <= 0:
+        raise ValueError(f"spacing must be positive, got {spacing_hz}")
+    fft = int(round(sample_rate / spacing_hz)) & ~1
+    if fft < 8:
+        raise ValueError(
+            f"{spacing_hz:g} Hz spacing needs a {fft}-point transform at "
+            f"{sample_rate} Hz, which is too small to carry a signal"
+        )
+    return fft
+
+
+def for_spacing(sample_rate: int, spacing_hz: float, carriers: int,
+                band_lo: float, band_hi: float, cp_fraction: int = 8,
+                symbols_per_frame: int | None = None) -> OfdmGeometry:
+    """A geometry of ``carriers`` subcarriers at a fixed spacing.
+
+    The band is a placement envelope rather than a target to fill: the block is
+    ``carriers`` wide whatever the band is, and is centred in it. Centred, not
+    anchored low, so reducing the count takes the same amount off each edge and
+    the signal stays where the operator put it.
     """
     if carriers < MIN_CARRIERS:
         raise ValueError(f"at least {MIN_CARRIERS} carriers, got {carriers}")
-    width = band_hi - band_lo
-    if width <= 0:
-        raise ValueError(f"empty band {band_lo:.0f}-{band_hi:.0f} Hz")
-    # Start from the spacing that would fill the band exactly and walk up.
-    # Rounding lands within a carrier or so, and each step of two adds a
-    # fraction of one, so this is a handful of iterations rather than a search.
-    fft = max(4, int(sample_rate * carriers / width) & ~1)
-    while True:
-        spacing = sample_rate / fft
-        lo = max(1, int(np.ceil(band_lo / spacing)))
-        hi = min(fft // 2 - 1, int(np.floor(band_hi / spacing)) - 1)
-        room = hi - lo + 1
-        if room >= carriers:
-            lo += (room - carriers) // 2
-            return fft, lo, lo + carriers - 1
-        fft += 2
-
-
-def for_carriers(sample_rate: int, band_lo: float, band_hi: float,
-                 carriers: int, cp_fraction: int = 8,
-                 symbols_per_frame: int | None = None) -> OfdmGeometry:
-    """A geometry with a chosen number of carriers in a chosen band.
-
-    ``symbols_per_frame`` defaults to whatever holds the frame near
-    FRAME_TARGET_SECONDS, so the frame stays the same length in time as the
-    carrier count moves and only the time-frequency trade changes.
-    """
-    fft, bin_lo, bin_hi = fit_carriers(sample_rate, band_lo, band_hi, carriers)
+    fft = fft_for_spacing(sample_rate, spacing_hz)
+    spacing = sample_rate / fft
+    top = fft // 2 - 1
+    if carriers > top:
+        raise ValueError(
+            f"{carriers} carriers at {spacing:.1f} Hz needs "
+            f"{carriers * spacing / 1000:.1f} kHz, past the "
+            f"{sample_rate / 2000:.1f} kHz Nyquist limit of this card"
+        )
+    lo = max(1, int(np.ceil(band_lo / spacing)))
+    hi = min(top, int(np.floor(band_hi / spacing)) - 1)
+    room = hi - lo + 1
+    if room < carriers:
+        # Refused rather than allowed to spill. The band is not a suggestion --
+        # on an FM path its upper edge is the 19 kHz stereo pilot, and a block
+        # that quietly ran past it would be transmitting into the pilot while
+        # every panel still reported the band it was asked for.
+        raise ValueError(
+            f"{carriers} carriers at {spacing:.0f} Hz spacing need "
+            f"{carriers * spacing / 1000:.1f} kHz, and "
+            f"{band_lo:.0f}-{band_hi:.0f} Hz has room for {max(0, room)}. "
+            f"Use fewer carriers, or a narrower spacing."
+        )
+    lo += (room - carriers) // 2              # centred in the envelope
     cp = max(1, fft // cp_fraction)
     if symbols_per_frame is None:
         want = FRAME_TARGET_SECONDS * sample_rate / (fft + cp)
         symbols_per_frame = max(MIN_FRAME_SYMBOLS, int(round(want)) - 2)
     return OfdmGeometry(sample_rate=sample_rate, fft=fft, cp=cp,
-                        bin_lo=bin_lo, bin_hi=bin_hi,
+                        bin_lo=lo, bin_hi=lo + carriers - 1,
                         symbols_per_frame=symbols_per_frame)
 
 

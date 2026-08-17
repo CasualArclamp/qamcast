@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.1.0 — OFDM: spacing and carrier count are now two dials
+
+**Changed — the carrier count means bandwidth now, not spacing**
+
+- The band used to be fixed and the count divided it, so the count *was* the
+  subcarrier spacing: it moved echo tolerance and drift tolerance in opposite
+  directions and left the bitrate alone. Now the **spacing** is its own dial and
+  sets ruggedness, and the **count** sets the occupied width and so the bitrate.
+  Halving the count halves the bandwidth and the rate and changes nothing else.
+- New **Subcarrier spacing** dial: 400 / 300 / 200 / 150 / 100 / 75 / 50 / 25 Hz,
+  on both pages and as `--spacing` on both apps. Default 100 Hz, measured.
+- Finer carrier ladder (24…384 in 14 steps), because each rung is now a width.
+- Asking for more carriers than the band holds is refused rather than allowed to
+  spill past the upper edge — on an FM path that edge is the 19 kHz pilot.
+- Profile names carry both dials: `OFDM48-64@100`.
+- **Link keys are now QC3.** QC2 keys are rejected, not reinterpreted: the same
+  count means a different link under the new dial.
+
+**Added**
+
+- `OFDMREVERB` — 25 Hz spacing, half the bandwidth, eight times the echo
+  tolerance. It decodes the `reverb` channel (6 ms echoes), which the README
+  documented as the case this modem fails: 89/90 frames and 180/180 audio
+  packets bit-exact, against 0 for single carrier and 7 for `OFDM48`.
+- `tools/spacing.py` — tabulates and decodes at every spacing, so the choice is
+  measured rather than argued.
+
+**Measured**
+
+- Spectral efficiency moves 12% across a 16× change in spacing while echo
+  tolerance moves 16×, so spacing is chosen for the channel, not the rate.
+- The 25 Hz cliff is real: 11 Hz of offset tolerance against the `radio`
+  channel's 15 Hz drift decodes 0 frames in 40.
+
 ## v1.0.1 — APSK mode fixes
 
 **Fixed**

@@ -16,12 +16,26 @@ from qamcore import linkkey, profiles  # noqa: E402
 def main() -> int:
     ok = True
 
-    print("-- every preset, and every carrier count of every OFDM preset")
+    print("-- every preset, and every spacing and count of every OFDM preset")
     keys = []
+    skipped = 0
     for name, p in profiles.PROFILES.items():
-        counts = profiles.OFDM_CARRIER_CHOICES if p.is_ofdm else (None,)
-        for c in counts:
-            q = profiles.with_carriers(p, c) if c else p
+        if not p.is_ofdm:
+            variants = [p]
+        else:
+            variants = []
+            for s in profiles.OFDM_SPACING_CHOICES:
+                for c in profiles.OFDM_CARRIER_CHOICES:
+                    # Not every combination exists: the count is a width now,
+                    # so count x spacing has to fit the band. Skipping those is
+                    # the point rather than a gap -- they are refused at the
+                    # dial too.
+                    try:
+                        variants.append(profiles.with_carriers(
+                            profiles.with_spacing(p, s), c))
+                    except ValueError:
+                        skipped += 1
+        for q in variants:
             key = linkkey.encode(q)
             back = linkkey.to_profile(linkkey.decode(key))
             if not linkkey._same_link(q, back):
@@ -29,6 +43,7 @@ def main() -> int:
                 ok = False
             keys.append(key)
     print(f"   {len(keys)} keys, every one rebuilding the same physical layer")
+    print(f"   {skipped} spacing/count pairs too wide for their band, skipped")
 
     print("-- links that are not any preset")
     for sr, sym, ro, pilot, frame in ((48000, 12000, 0.25, 32, 2048),
@@ -68,7 +83,7 @@ def main() -> int:
 
     print("-- formatting a human might introduce")
     for v in (base.lower(), base.replace("-", ""), f"  {base}  ",
-              "QC2-" + body.replace("1", "I").replace("0", "O")):
+              linkkey.PREFIX + "-" + body.replace("1", "I").replace("0", "O")):
         try:
             linkkey.decode(v)
         except linkkey.LinkKeyError as exc:
@@ -84,7 +99,8 @@ def main() -> int:
                 continue
             total += 1
             try:
-                linkkey.decode("QC2-" + body[:pos] + repl + body[pos + 1:])
+                linkkey.decode(linkkey.PREFIX + "-"
+                               + body[:pos] + repl + body[pos + 1:])
             except linkkey.LinkKeyError:
                 caught += 1
     print(f"   single-character typos rejected: {caught}/{total} "
@@ -93,8 +109,12 @@ def main() -> int:
         ok = False
 
     print("-- junk")
-    for junk in ("", "hello", "QC2-SHORT", "QC9-ABCDEFGHJKMNPQ", "QC2-",
-                 "QC1-27G02H0X0WCHP"):
+    # The version prefix is spelled out rather than built from
+    # linkkey.PREFIX: these are keys from *other* versions, and the point is
+    # that they are refused. Writing PREFIX here would silently turn the test
+    # into "the current version rejects itself", which it must not.
+    for junk in ("", "hello", "QC3-SHORT", "QC9-ABCDEFGHJKMNPQ", "QC3-",
+                 "QC1-27G02H0X0WCHP", "QC2-640E00F80F434HKM"):
         try:
             linkkey.decode(junk)
             print(f"   FAIL: accepted {junk!r}")
@@ -105,7 +125,7 @@ def main() -> int:
             print(f"   FAIL: {junk!r} raised {type(exc).__name__}, "
                   f"not LinkKeyError")
             ok = False
-    print("   empty, prose, wrong length, wrong version, an old QC1 key")
+    print("   empty, prose, wrong length, wrong version, old QC1 and QC2 keys")
 
     print("\nPASS" if ok else "\nFAILURES")
     return 0 if ok else 1

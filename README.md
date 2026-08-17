@@ -110,7 +110,7 @@ python tools/rates.py WIDE
 
 Card rate, symbol rate, roll-off, carrier frequency, pilot spacing, frame
 length, the constellation family — QAM or APSK — and, in OFDM, the subcarrier
-count cannot travel in the header. The frame is
+spacing and count cannot travel in the header. The frame is
 
 ```
 [ preamble ][ MODCOD codeword ][ data ]
@@ -127,8 +127,8 @@ shows one; paste it into the receiver's Link key box and press Apply, and every
 dial follows:
 
 ```
-QC2-402Y00C04NC1P6FR    48 kHz card · 9600 Bd · roll-off 0.25 · carrier 7 kHz
-QC2-448E00C40E24W00B    48 kHz card · OFDM 24 carriers · 0.9-20.1 kHz
+QC3-600E00C04NC1P66N    48 kHz card · 9600 Bd · roll-off 0.25 · carrier 7 kHz
+QC3-648E00C40E24WJBP    48 kHz card · OFDM 192 carriers · 100 Hz apart · 0.9-20.1 kHz
 ```
 
 Sixteen Crockford base32 characters over a 10-byte record. Crockford leaves out
@@ -159,8 +159,8 @@ discard three of the things the key exists to carry.
 `tools/linkkey_check.py` covers the format — round trip, typos, formatting,
 and that no custom link ever borrows a preset's name. `tools/linkkey_roundtrip.py`
 covers the thing that actually matters: that a key copied across gives the
-receiver the same physical layer the transmitter is using, over all 43
-profile-and-carrier combinations and five hand-dialled links.
+receiver the same physical layer the transmitter is using, over all 354
+profile, spacing and carrier combinations and ten hand-dialled links.
 
 In OFDM the receiver's symbol rate is derived from the geometry, not chosen —
 it is disabled and shows `14080 sym/s (from geometry)`. It is not a dial to
@@ -204,15 +204,17 @@ margin to absorb it.
 
 ## OFDM mode
 
-Four profiles carry the same bands over OFDM instead of a single carrier, so a
-link can move between the two without re-planning the spectrum:
+Five profiles carry OFDM instead of a single carrier, four of them on the same
+bands as their single-carrier namesakes so a link can move between the two
+without re-planning the spectrum:
 
-| Profile | Fs | Default carriers | Occupied | Top rate |
-|---|---|---|---|---|
-| `OFDM96` | 96 kHz | 384 | 3.8–42.2 kHz | 176 kbps |
-| `OFDM48` | 48 kHz | 192 | 0.9–20.1 kHz | 88 kbps |
-| `OFDM44` | 44.1 kHz | 192 | 1.2–18.8 kHz | 79 kbps |
-| `OFDMRADIO` | 48 kHz | 128 | 1.0–13.0 kHz | 48 kbps |
+| Profile | Fs | Spacing | Carriers | Occupied | Top rate |
+|---|---|---|---|---|---|
+| `OFDM96` | 96 kHz | 100 Hz | 384 | 3.8–42.2 kHz | 176 kbps |
+| `OFDM48` | 48 kHz | 100 Hz | 192 | 0.9–20.1 kHz | 88 kbps |
+| `OFDM44` | 44.1 kHz | 100 Hz | 160 | 1.9–17.9 kHz | 73 kbps |
+| `OFDMRADIO` | 48 kHz | 100 Hz | 112 | 1.4–12.6 kHz | 45 kbps |
+| `OFDMREVERB` | 48 kHz | 25 Hz | 384 | 5.7–15.3 kHz | 42 kbps |
 
 It exists because the single-carrier equaliser cannot be made to reach
 further. It corrects ±12 symbols, and training a longer one on the *true*
@@ -250,37 +252,85 @@ a frame and corrected in the time domain before the transform, since the
 damage is interference done before it. Measured recovery: exact to 0.01 Hz at
 offsets of 5, 15 and 30 Hz.
 
-### Choosing the carrier count
+### Spacing and carrier count
 
-The band is fixed by the profile, so the number of carriers *is* the subcarrier
-spacing, and the spacing sets both halves of the only trade OFDM has. It is
-selectable at both ends — 24, 32, 48, 64, 96, 128, 192, 256 or 384 — because
-which half matters depends on the link. On `OFDM48`:
+Two dials doing two separate jobs.
 
-| Carriers | Spacing | Absorbs echo | Pulls in offset | Top rate |
-|---|---|---|---|---|
-| 24 | 750 Hz | 0.17 ms | 333 Hz | 82 kbps |
-| 32 | 585 Hz | 0.21 ms | 261 Hz | 89 kbps |
-| 48 | 393 Hz | 0.31 ms | 175 Hz | 94 kbps |
-| 64 | 300 Hz | 0.42 ms | 133 Hz | 93 kbps |
-| 96 | 198 Hz | 0.62 ms | 88 Hz | 92 kbps |
-| 128 | 150 Hz | 0.83 ms | 67 Hz | 90 kbps |
-| 192 | 100 Hz | 1.25 ms | 44 Hz | 88 kbps |
-| 256 | 75 Hz | 1.67 ms | 33 Hz | 84 kbps |
-| 384 | 50 Hz | 2.50 ms | 22 Hz | 84 kbps |
+**Spacing is the mode.** It alone decides how much echo the guard interval
+absorbs and how far off frequency the transmitter may drift, and those move in
+opposite directions. **Carrier count is the bandwidth**, and therefore the
+bitrate: the block is spacing × count across, so halving the count halves both
+the width and the rate and changes nothing else about how the link behaves.
 
-Throughput barely moves, and that is not luck: the payload rate comes from the
-occupied bandwidth, not from how finely it is divided. What moves is which
-impairment breaks the link first — an echo longer than the third column, or a
-transmitter further off frequency than the fourth. Loopback bears the table
-out. The `acoustic` preset (1.1 ms echo) needs 96 carriers or more; the `radio`
-preset (15 Hz offset) fails at 384 on `OFDM48` and gets no lock at all at 384
-on `OFDMRADIO`, whose 31 Hz spacing puts 15 Hz half a subcarrier out.
+That separation is a correction. This used to be one dial doing both jobs
+badly — the band was fixed and the count divided it, so the count *was* the
+spacing. It moved echo tolerance up while moving offset tolerance down and left
+the throughput alone, which is the one thing anyone would expect a "how many
+carriers" control to change. Bandwidth could not be traded for ruggedness at
+all, and that trade turns out to be the valuable one.
+
+`tools/spacing.py` measures it. Holding the band and taking as many carriers as
+fit, on a 48 kHz card at 256QAM 5/6:
+
+| Spacing | Carriers | Occupied | Absorbs echo | Pulls in offset | bps/Hz |
+|---|---|---|---|---|---|
+| 400 Hz | 32 | 12.8 kHz | 0.31 ms | 178 Hz | 4.72 |
+| 300 Hz | 64 | 19.2 kHz | 0.42 ms | 133 Hz | **4.85** |
+| 200 Hz | 64 | 12.8 kHz | 0.62 ms | 89 Hz | 4.76 |
+| 150 Hz | 128 | 19.2 kHz | 0.83 ms | 67 Hz | 4.71 |
+| **100 Hz** | **192** | **19.2 kHz** | **1.25 ms** | **44 Hz** | **4.57** |
+| 75 Hz | 256 | 19.2 kHz | 1.67 ms | 33 Hz | 4.39 |
+| 50 Hz | 384 | 19.2 kHz | 2.50 ms | 22 Hz | 4.36 |
+| 25 Hz | 384 | 9.6 kHz | 5.00 ms | 11 Hz | 4.36 |
+
+**Spectral efficiency barely moves — 12% across a sixteen-fold change in
+spacing — while echo tolerance moves 16×.** So the spacing is chosen for the
+channel, not for the rate, and buying echo tolerance is far cheaper than it
+looks. Efficiency does fall monotonically as the spacing narrows, and for a
+reason worth naming: the prefix costs a fixed *fraction* either way, but the
+preamble and MODCOD codeword are two symbols out of a frame of fixed duration,
+so a longer symbol means fewer symbols to spread them across.
+
+Decoding 40 frames at each spacing bears it out, and shows where the cliffs are:
+
+| Spacing | `radio` (0.12 ms, 15 Hz) | `acoustic` (1.1 ms) | `reverb` (6.0 ms) |
+|---|---|---|---|
+| 400 Hz | 39/40 | 13/40 | 1/40 |
+| 200 Hz | 39/40 | 24/40 | 1/40 |
+| 100 Hz | 38/40 | **39/40** | 5/40 |
+| 50 Hz | 37/40 | 39/40 | 35/40 |
+| 25 Hz | **0/40** | 38/40 | **38/40** |
+
+**100 Hz is the default**: the widest that clears the acoustic channel, with 3×
+margin over the radio channel's drift. The 25 Hz column is the offset cliff —
+11 Hz of tolerance against 15 Hz of drift, and it is a cliff rather than a
+softening.
 
 Both ends must be set the same, exactly like the profile — none of it travels
-in the header. `--carriers 64` on both apps, or the dropdown on both pages. A
-count shows in the profile name, so `OFDM48-64` names the link completely and
-can be handed straight to `--profile` at the far end.
+in the header. `--spacing 100 --carriers 64` on both apps, or the two dropdowns
+on both pages. Both show in the profile name, so `OFDM48-64@100` names the link
+completely and can be handed straight to `--profile` at the far end. Asking for
+more carriers than the band can hold at a given spacing is refused rather than
+allowed to spill past the upper edge — on an FM path that edge is the 19 kHz
+stereo pilot.
+
+### Reverb, which used to be the case that failed
+
+The `reverb` channel preset — 2.5 ms and 6 ms echoes — was built to be the case
+this modem does *not* handle, so the limit could be measured rather than
+assumed. It no longer is. `OFDMREVERB` trades half the bandwidth for eight
+times the echo tolerance and decodes it:
+
+| Profile | Occupied | reverb, 90 frames | Audio |
+|---|---|---|---|
+| `WIDE48` single carrier | 19.2 kHz | 0 locked | none |
+| `OFDM48` | 19.2 kHz | 7 locked | none |
+| `OFDMREVERB` | 9.6 kHz | **89 locked** | **180/180 packets bit-exact** |
+
+At 16QAM 1/2, which is the rung the 12.1 dB EVM through that channel supports —
+11.6 kbps, enough for speech-grade Opus. It is not a default: 11 Hz of offset
+tolerance needs a path that does not drift, so it is for a loudspeaker in a
+room, not for a transmitter.
 
 **Frame duration is held near 220 ms across the whole range** rather than left
 to scale with the symbol. The preamble overhead, the acquisition delay and the
@@ -526,8 +576,9 @@ taps, 6 dB at 41.**
 1.25 ms on `RADIO`. That is comfortable for a direct feed and for most
 off-air paths; severe multipath is the known weakness of single-carrier QAM
 and was flagged before any code was written. The channel simulator's `reverb`
-preset deliberately exceeds it, and is kept as a failing test so the limit
-stays measured rather than assumed.
+preset deliberately exceeds it, and is kept as a failing test for single
+carrier so the limit stays measured rather than assumed. OFDM at 25 Hz spacing
+now decodes it — see *Reverb, which used to be the case that failed*.
 
 ## Shutting down
 
@@ -567,25 +618,28 @@ WIDE48, 48 kHz: locked, EVM 46-52 dB, zero RS failures
 ```
 
 `tools/loopback.py` passes on every profile over the clean, noisy and radio
-channel presets — including all four OFDM profiles at all nine carrier counts,
+channel presets — including every OFDM profile at every spacing and count,
 which is where the `acoustic` preset starts sorting them by prefix length.
 `tools/dfree.py` confirms every punctured rate matches its published free
 distance.
 
-A profile name carries its carrier count, so the end-to-end check runs at any
+A profile name carries its spacing and carrier count, so the end-to-end check runs at any
 of them:
 
 ```bash
-python tools/selftest.py OFDM48-32 32k opus
+python tools/selftest.py OFDM48-96@100 32k opus
 ```
 
 `tools/conv_check.py` runs the Viterbi decoder against a plain textbook
 implementation over every rate and requires them to agree on every bit, and
 `tools/dfree.py` checks the code itself. `tools/pagecheck.py` checks the two
 web pages statically — that every `$('id')` the script uses exists, that every
-function it calls is defined, and that the div tags balance. A page whose
-script throws during start-up does not look broken, it looks *empty*, and
-shipping exactly that is what the tool is for.
+function it calls is defined, that every dial in the Link panel is actually
+sent to the server, and that the div tags balance. A page whose script throws
+during start-up does not look broken, it looks *empty*, and shipping exactly
+that is what the tool is for; a control that is wired to a handler but left out
+of the payload looks alive and does nothing, which is how the mode selector
+shipped.
 
 ## Speed
 

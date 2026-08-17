@@ -204,6 +204,7 @@ class Receiver:
                     "modcods": webui.modcod_list(),
                     "sample_rates": webui.sample_rates(),
                     "carrier_choices": list(profiles.OFDM_CARRIER_CHOICES),
+                    "spacing_choices": list(profiles.OFDM_SPACING_CHOICES),
                     "default_profile": webui.default_profile(),
                     "default_profiles": webui.default_profiles(),
                     "symbol_rates": {str(r): webui.symbol_rates(r)
@@ -724,6 +725,10 @@ def main() -> int:
     ap.add_argument("--carriers", type=int, default=None,
                     choices=list(profiles.OFDM_CARRIER_CHOICES),
                     help="OFDM subcarriers; must match the transmitter")
+    ap.add_argument("--spacing", type=float, default=None,
+                    choices=list(profiles.OFDM_SPACING_CHOICES),
+                    help="OFDM subcarrier spacing, Hz; must match the "
+                         "transmitter")
     ap.add_argument("--pilot-spacing", type=int, default=64, choices=[32, 64, 128])
     ap.add_argument("--mode", default="sc", choices=["sc", "apsk"],
                     help="constellation family for --profile CUSTOM; must "
@@ -776,6 +781,7 @@ def main() -> int:
                         "sample_rate": a.sample_rate, "symbol_rate": a.symbol_rate,
                         "rolloff": a.rolloff, "carrier": a.carrier,
                         "carriers": a.carriers, "mode": a.mode,
+                        "spacing": a.spacing,
                         "pilot_spacing": a.pilot_spacing})
         if res.get("error"):
             print(res["error"], file=sys.stderr)

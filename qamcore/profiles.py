@@ -25,6 +25,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import interleave
+# Safe at module level, unlike framing: ofdm imports nothing from this package
+# at import time -- it pulls framing in inside the functions that need it,
+# precisely so this direction stays open. The spacing ladder lives there,
+# next to the geometry it constrains, and is re-exported here so the UI and the
+# link key read both ladders from one place.
+from .ofdm import OFDM_SPACING_CHOICES  # noqa: F401
 
 
 # --------------------------------------------------------------------------
@@ -287,6 +293,13 @@ class Profile:
     ofdm_band_lo: float = 0.0
     ofdm_band_hi: float = 0.0
     ofdm_cp_fraction: int = 0
+    # Nominal subcarrier spacing, Hz, when this profile is one whose count sets
+    # the bandwidth. Zero means the older reading, where the band is fixed and
+    # the count divides it -- see make_ofdm_profile. Carried rather than
+    # derived from ofdm_fft because it is the *nominal* figure both ends round
+    # from, and rounding back out of the transform size would not always land
+    # on the same choice.
+    ofdm_spacing: float = 0.0
     # The single-carrier profile the target band came from. A label only --
     # nothing reconstructs geometry from it, so a profile built from a link key
     # can leave it empty.
@@ -326,8 +339,10 @@ class Profile:
 
     @property
     def family(self) -> str:
-        """The profile name without any carrier-count suffix."""
-        return self.name.rsplit("-", 1)[0] if self.is_ofdm else self.name
+        """The profile name with any '-count@spacing' suffix stripped."""
+        if not self.is_ofdm:
+            return self.name
+        return self.name.split("@", 1)[0].rsplit("-", 1)[0]
 
     @property
     def geometry(self):
@@ -651,24 +666,53 @@ PROFILES.update({
 # error the signal shrugs off. Throughput barely moves, because that is set by
 # the occupied bandwidth and not by how finely it is divided.
 
-# What the dial offers. Both ends must be set the same, exactly like the
+# What the dials offer. Both ends must be set the same, exactly like the
 # profile itself -- none of this travels in the header.
-OFDM_CARRIER_CHOICES = (24, 32, 48, 64, 96, 128, 192, 256, 384)
+#
+# The count ladder is finer than it used to be, and that is a consequence of
+# the count meaning bandwidth. When it merely divided a fixed band, the gaps
+# did not matter -- every rung occupied the same width. Now each rung *is* a
+# width, so a coarse ladder leaves the band part-empty: at 200 Hz spacing on a
+# 48 kHz card, the old ladder jumped 64 -> 96, which is 12.8 kHz -> 19.2 kHz
+# across a 19.2 kHz band, so a third of it went unused for want of a rung.
+OFDM_CARRIER_CHOICES = (24, 32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256,
+                        320, 384)
 
+# Kept to 16 so a count and a spacing share one byte in a link key.
+assert len(OFDM_CARRIER_CHOICES) <= 16
 
 OFDM_CP_CHOICES = (4, 8, 16, 32)
+
+# The spacing a link lands on unless it is told otherwise, measured rather
+# than picked. From tools/spacing.py, decoding 40 frames per spacing:
+#
+#   radio     0.12 ms echo, 15 Hz drift    every spacing 400-50 Hz passes
+#   acoustic  1.10 ms echo,  3 Hz drift    100 Hz and narrower passes
+#   reverb    6.00 ms echo,  3 Hz drift    50 Hz partial, 25 Hz passes
+#
+# 100 Hz is the widest that clears the acoustic channel, it holds 3x margin
+# over the radio channel's drift, and it gives up 7% of the spectral
+# efficiency available at the top of the range. Narrower is for a genuinely
+# reverberant path and costs bandwidth, not much else; wider is for a drifting
+# one with no echo to speak of.
+OFDM_DEFAULT_SPACING = 100
 
 
 def make_ofdm_profile(sample_rate: int, band_lo: float, band_hi: float,
                       carriers: int, cp_fraction: int = 8,
                       name: str = "CUSTOM", description: str = "",
-                      base: str = "", template: Profile | None = None) -> Profile:
-    """An OFDM profile from an explicit band, with no named base needed.
+                      base: str = "", template: Profile | None = None,
+                      spacing_hz: float = 0.0) -> Profile:
+    """An OFDM profile: a spacing, a carrier count, and a band to sit in.
 
     This is what a link key rebuilds into, so it must produce exactly what
-    ``_ofdm`` and ``with_carriers`` produce from the same band and count --
-    they all go through :func:`ofdm.for_carriers`, which is the single place
-    that turns a wanted carrier count into a geometry.
+    ``_ofdm``, ``with_carriers`` and ``with_spacing`` produce from the same
+    inputs -- they all go through :func:`ofdm.for_spacing`, which is the single
+    place a wanted spacing and count become a geometry.
+
+    The band is a placement envelope, not a target to fill: the block is
+    ``carriers * spacing`` wide and is centred in it. Asking for more than fits
+    is an error rather than a signal that quietly runs past the upper edge.
 
     ``template`` supplies the single-carrier fields the OFDM path never reads
     -- symbol rate, roll-off, carrier, frame length, pilot spacing. They exist
@@ -676,9 +720,10 @@ def make_ofdm_profile(sample_rate: int, band_lo: float, band_hi: float,
     through ``is_ofdm`` before it gets to them. Without a template they are
     filled with values chosen to satisfy that check and nothing else.
     """
-    from .ofdm import for_carriers
+    from .ofdm import for_spacing
 
-    geo = for_carriers(sample_rate, band_lo, band_hi, carriers, cp_fraction)
+    geo = for_spacing(sample_rate, spacing_hz or OFDM_DEFAULT_SPACING, carriers,
+                      band_lo, band_hi, cp_fraction)
     if template is not None:
         sc = dict(symbol_rate=template.symbol_rate, rolloff=template.rolloff,
                   carrier=template.carrier, frame_symbols=template.frame_symbols,
@@ -694,35 +739,47 @@ def make_ofdm_profile(sample_rate: int, band_lo: float, band_hi: float,
         ofdm_symbols=geo.symbols_per_frame,
         ofdm_band_lo=float(band_lo), ofdm_band_hi=float(band_hi),
         ofdm_cp_fraction=cp_fraction, ofdm_base=base,
+        ofdm_spacing=float(spacing_hz or OFDM_DEFAULT_SPACING),
     )
     out.validate()
     return out
 
 
 def _ofdm(name: str, base: str, carriers: int, cp_fraction: int,
-          description: str) -> Profile:
+          description: str, spacing: float = 0.0) -> Profile:
     src = PROFILES[base]
     lo, hi = src.band
     return make_ofdm_profile(src.sample_rate, lo, hi, carriers, cp_fraction,
                              name=name, description=description, base=base,
-                             template=src)
+                             template=src, spacing_hz=spacing)
 
 
-# The counts here are the defaults, not limits -- each of these profiles will
-# build at any count in OFDM_CARRIER_CHOICES. They are the widest rung that
-# comfortably fits the band, which is the right default: the echo tolerance is
-# what OFDM is for, and a link that turns out to be drifting rather than
-# echoing can be walked down the dial.
+# Both numbers here are defaults rather than limits: each profile builds at any
+# count in OFDM_CARRIER_CHOICES and any spacing in OFDM_SPACING_CHOICES.
+#
+# The counts are the widest rung that fits each band at the default spacing, so
+# a profile starts by using the whole footprint it was given and the dial only
+# ever narrows it. The spacings are the measured default, except OFDMREVERB,
+# which exists to be the case the rest of this modem does not handle -- see the
+# note on OFDM_DEFAULT_SPACING and tools/spacing.py.
 PROFILES.update({
     "OFDM96": _ofdm("OFDM96", "WIDE", 384, 8,
                     "96 kHz card, OFDM, widest footprint"),
     "OFDM48": _ofdm("OFDM48", "WIDE48", 192, 8,
                     "48 kHz card, OFDM, full audio band"),
-    "OFDM44": _ofdm("OFDM44", "WIDE44", 192, 8,
+    "OFDM44": _ofdm("OFDM44", "WIDE44", 160, 8,
                     "44.1 kHz card, OFDM, full audio band"),
-    "OFDMRADIO": _ofdm("OFDMRADIO", "RADIO", 128, 4,
+    "OFDMRADIO": _ofdm("OFDMRADIO", "RADIO", 112, 4,
                        "48 kHz card, OFDM, fits a 15 kHz transmitter stage, "
                        "long prefix for multipath"),
+    # Half the bandwidth, eight times the echo tolerance. The trade the old
+    # carrier dial could not express, and the only geometry here that decodes
+    # a 6 ms room echo -- 38 frames in 40, against 0 for single carrier. Not a
+    # default: 11 Hz of carrier-offset tolerance needs a path that does not
+    # drift, so it is for a loudspeaker in a room, not a transmitter.
+    "OFDMREVERB": _ofdm("OFDMREVERB", "WIDE48", 384, 8,
+                        "48 kHz card, OFDM, 25 Hz spacing for a reverberant "
+                        "room; needs a path that does not drift", spacing=25),
 })
 
 # --------------------------------------------------------------------------
@@ -836,12 +893,33 @@ OFDM_DEFAULT_CARRIERS = {n: p.ofdm_carriers
                          for n, p in PROFILES.items() if p.is_ofdm}
 
 
-def with_carriers(profile: Profile, carriers: int | None) -> Profile:
-    """The same profile re-fitted to a different number of subcarriers.
+def _refit(profile: Profile, carriers: int, spacing: float) -> Profile:
+    """Rebuild an OFDM profile at a different count or spacing.
 
-    The band is the one the profile was fitted into, not the one it currently
-    occupies, so moving the dial back and forth lands on the same geometry
-    every time rather than creeping inwards.
+    Always from the band the profile was *fitted into*, never the one it
+    currently occupies -- the block sits inside that envelope by up to a
+    carrier, so refitting against where it ended up would walk it inwards a
+    little more on every turn of either dial.
+    """
+    # Both dials in the name, because both are needed to say which link this
+    # is. "OFDM48-24" was enough when the count divided a fixed band; now 24
+    # carriers at 400 Hz and 24 at 25 Hz are a 9.6 kHz signal and a 0.6 kHz
+    # one, and a name that cannot tell them apart is a name that cannot be
+    # handed to --profile at the far end.
+    return make_ofdm_profile(
+        profile.sample_rate, profile.ofdm_band_lo, profile.ofdm_band_hi,
+        carriers, profile.ofdm_cp_fraction,
+        name=f"{profile.family}-{carriers}@{spacing:g}",
+        description=profile.description,
+        base=profile.ofdm_base, template=profile, spacing_hz=spacing,
+    )
+
+
+def with_carriers(profile: Profile, carriers: int | None) -> Profile:
+    """The same profile at a different number of subcarriers.
+
+    The count is the bandwidth: this narrows or widens the signal and leaves
+    the echo and carrier-offset tolerances exactly where they were.
     """
     if not profile.is_ofdm or carriers is None:
         return profile
@@ -853,11 +931,44 @@ def with_carriers(profile: Profile, carriers: int | None) -> Profile:
             f"{carriers} subcarriers is not one of "
             f"{', '.join(str(c) for c in OFDM_CARRIER_CHOICES)}"
         )
-    return make_ofdm_profile(
-        profile.sample_rate, profile.ofdm_band_lo, profile.ofdm_band_hi,
-        carriers, profile.ofdm_cp_fraction,
-        name=f"{profile.family}-{carriers}", description=profile.description,
-        base=profile.ofdm_base, template=profile,
+    return _refit(profile, carriers, profile.ofdm_spacing)
+
+
+def with_spacing(profile: Profile, spacing: float | None) -> Profile:
+    """The same profile at a different subcarrier spacing.
+
+    The spacing is the ruggedness: this moves the echo and carrier-offset
+    tolerances and leaves the carrier count alone -- so the occupied bandwidth
+    moves with it, because the count is a count and not a width.
+
+    If the band cannot hold the count at the new spacing, the count comes down
+    to the widest rung that fits rather than the call failing. Widening the
+    spacing is a deliberate request for a more rugged link, and refusing it
+    because the signal would not fit the old footprint would be answering a
+    question nobody asked.
+    """
+    if not profile.is_ofdm or spacing is None:
+        return profile
+    spacing = float(spacing)
+    if spacing == profile.ofdm_spacing:
+        return profile
+    if spacing not in OFDM_SPACING_CHOICES:
+        raise ValueError(
+            f"{spacing:g} Hz spacing is not one of "
+            f"{', '.join(str(c) for c in OFDM_SPACING_CHOICES)} Hz"
+        )
+    want = profile.ofdm_carriers
+    for carriers in sorted(OFDM_CARRIER_CHOICES, reverse=True):
+        if carriers > want:
+            continue
+        try:
+            return _refit(profile, carriers, spacing)
+        except ValueError:
+            continue
+    raise ValueError(
+        f"{spacing:g} Hz spacing does not fit "
+        f"{profile.ofdm_band_lo:.0f}-{profile.ofdm_band_hi:.0f} Hz at any "
+        f"carrier count"
     )
 
 ALIASES = {"WIDE96": "WIDE", "STANDARD": "WIDE48"}
@@ -871,13 +982,21 @@ def get_profile(name: str) -> Profile:
     key = ALIASES.get(key, key)
     if key in PROFILES:
         return PROFILES[key]
-    # "OFDM48-64" -- an OFDM profile at a chosen carrier count. Named so the
-    # name still describes the link once the dial has been moved, and so it
-    # round-trips: whatever the status panel shows can be handed straight back
-    # to --profile at the far end.
-    head, sep, tail = key.rpartition("-")
+    # "OFDM48-64@100" -- an OFDM profile at a chosen carrier count and spacing.
+    # Both are in the name so it still describes the link once either dial has
+    # moved, and so it round-trips: whatever the status panel shows can be
+    # handed straight back to --profile at the far end. The spacing may be
+    # omitted, in which case the base profile's own is kept.
+    body, _, spacing = key.partition("@")
+    head, sep, tail = body.rpartition("-")
     if sep and tail.isdigit() and head in PROFILES and PROFILES[head].is_ofdm:
-        return with_carriers(PROFILES[head], int(tail))
+        p = PROFILES[head]
+        if spacing:
+            try:
+                p = with_spacing(p, float(spacing))
+            except ValueError as exc:
+                raise ValueError(f"profile {name!r}: {exc}") from None
+        return with_carriers(p, int(tail))
     raise ValueError(
         f"unknown profile {name!r}; expected one of {', '.join(PROFILES)}"
     )

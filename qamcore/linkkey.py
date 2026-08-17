@@ -25,21 +25,29 @@ three fields and came back tuned 1000-13000 Hz instead of 480-12480. It never
 locks and nothing says why. So the key carries every field the geometry needs,
 and the preset name it happens to match is a label shown to the operator.
 
-Format:  QC2-<16 Crockford base32 chars>
+Format:  QC3-<16 Crockford base32 chars>
 
 carrying a 10-byte record:
 
-    0       version (high nibble), mode (low nibble: 0 single, 1 OFDM)
+    0       version (high nibble), mode (low nibble: 0 single, 1 OFDM, 2 APSK)
     1       pilot index (bits 0-1), frame index (2-3), prefix index (4-5)
     2..3    sample rate / 100, little endian
     4..5    single: symbol rate          OFDM: band low, Hz
     6..7    single: carrier, Hz          OFDM: band high, Hz
-    8       single: roll-off x 100       OFDM: subcarrier count index
+    8       single: roll-off x 100       OFDM: count index (low nibble),
+                                               spacing index (high nibble)
     9       CRC-8, so a mistyped key is rejected rather than silently mistuned
 
 The OFDM band is the one the carriers are *fitted into*, not the one they end
 up occupying -- the latter sits inside it by up to a subcarrier, and refitting
 against it would walk the signal inwards on every copy.
+
+QC2 keys are rejected rather than read. They carried a subcarrier count with no
+spacing, because the count *was* the spacing then -- it divided a fixed band.
+Now the count is the bandwidth and the spacing is its own field, so the same
+byte means something different, and the same count means a different link. A
+QC2 key read as QC3 would tune confidently to the wrong place, which is the one
+failure this format exists to prevent.
 
 Crockford base32 leaves out I, L, O and U, so the key survives being read
 aloud or written down. Decoding is case insensitive and ignores dashes.
@@ -54,8 +62,8 @@ _DECODE = {c: i for i, c in enumerate(_ALPHABET)}
 # Crockford's stated substitutions, so a key read off a screen still decodes.
 _DECODE.update({"I": 1, "L": 1, "O": 0, "U": 0})
 
-PREFIX = "QC2"
-VERSION = 2
+PREFIX = "QC3"
+VERSION = 3
 _RECORD = 10
 _BODY_CHARS = 16          # ceil(10 bytes * 8 / 5)
 
@@ -128,8 +136,10 @@ def encode(profile: profiles.Profile) -> str:
                        "prefix fraction") << 4
         body[4], body[5] = _u16(profile.ofdm_band_lo, "band low")
         body[6], body[7] = _u16(profile.ofdm_band_hi, "band high")
-        body[8] = _index(profile.ofdm_carriers, profiles.OFDM_CARRIER_CHOICES,
-                         "subcarrier count")
+        body[8] = (_index(profile.ofdm_carriers, profiles.OFDM_CARRIER_CHOICES,
+                          "subcarrier count")
+                   | _index(profile.ofdm_spacing, profiles.OFDM_SPACING_CHOICES,
+                            "subcarrier spacing") << 4)
     else:
         flags = (_index(profile.pilot_spacing, profiles.PILOT_CHOICES,
                         "pilot spacing")
@@ -172,15 +182,20 @@ def decode(key: str) -> dict:
     b = raw[6] | (raw[7] << 8)
 
     if mode == MODE_OFDM:
-        idx = raw[8]
-        if idx >= len(profiles.OFDM_CARRIER_CHOICES):
+        count_idx = raw[8] & 0x0F
+        spacing_idx = raw[8] >> 4
+        if count_idx >= len(profiles.OFDM_CARRIER_CHOICES):
             raise LinkKeyError("the key names a subcarrier count this build "
+                               "does not have")
+        if spacing_idx >= len(profiles.OFDM_SPACING_CHOICES):
+            raise LinkKeyError("the key names a subcarrier spacing this build "
                                "does not have")
         info = {
             "mode": "ofdm",
             "sample_rate": sample_rate,
             "band": [float(a), float(b)],
-            "carriers": profiles.OFDM_CARRIER_CHOICES[idx],
+            "carriers": profiles.OFDM_CARRIER_CHOICES[count_idx],
+            "spacing": profiles.OFDM_SPACING_CHOICES[spacing_idx],
             "cp_fraction": profiles.OFDM_CP_CHOICES[(flags >> 4) & 3],
         }
     elif mode in _SC_MODES:
@@ -193,6 +208,7 @@ def decode(key: str) -> dict:
             "pilot_spacing": profiles.PILOT_CHOICES[flags & 3],
             "frame_symbols": profiles.FRAME_CHOICES[(flags >> 2) & 3],
             "carriers": None,
+            "spacing": None,
         }
     else:
         raise LinkKeyError(f"unknown link mode {mode}")
@@ -213,7 +229,8 @@ def to_profile(info: dict, name: str = "") -> profiles.Profile:
             return profiles.make_ofdm_profile(
                 info["sample_rate"], lo, hi, info["carriers"],
                 info["cp_fraction"], name=label,
-                description="from a link key")
+                description="from a link key",
+                spacing_hz=info["spacing"])
         return profiles.make_profile(
             sample_rate=info["sample_rate"], symbol_rate=info["symbol_rate"],
             rolloff=info["rolloff"], carrier=info["carrier"],
@@ -230,9 +247,13 @@ def describe(info: dict) -> str:
     if info["mode"] == "apsk":
         parts.append("APSK")
     if info["carriers"]:
-        lo, hi = info["band"]
         parts.append(f"OFDM {info['carriers']} carriers")
-        parts.append(f"{lo / 1000:g}-{hi / 1000:g} kHz")
+        parts.append(f"{info['spacing']:g} Hz apart")
+        # The band the block actually occupies, not the envelope it was fitted
+        # into. Those differ by up to a carrier, and the occupied one is what
+        # an operator checks against a waterfall.
+        lo, hi = to_profile(info).band
+        parts.append(f"{lo / 1000:.1f}-{hi / 1000:.1f} kHz")
     else:
         parts.append(f"{info['symbol_rate']} Bd")
         parts.append(f"roll-off {info['rolloff']:g}")
@@ -252,13 +273,26 @@ def profile_name(info: dict) -> str:
         want = to_profile(info, name="CUSTOM")
     except LinkKeyError:
         return ""
-    for name, p in profiles.PROFILES.items():
-        candidates = [p]
-        if p.is_ofdm and info["carriers"]:
-            candidates = [profiles.with_carriers(p, info["carriers"])]
-        for q in candidates:
-            if _same_link(q, want):
-                return q.name
+    # A preset as it stands wins over one with a dial moved, even though both
+    # name the same link. OFDMREVERB is exactly OFDM48 wound out to 25 Hz, and
+    # reporting it as "OFDM48-384@25" is true but useless -- the preset exists
+    # because that geometry is worth a name.
+    for p in profiles.PROFILES.values():
+        if _same_link(p, want):
+            return p.name
+    for p in profiles.PROFILES.values():
+        if not (p.is_ofdm and info["carriers"]):
+            continue
+        # Both dials, since either can have been moved off the preset. The
+        # spacing goes first: it can pull the count down when the band will
+        # not hold it, and the count is then set outright.
+        try:
+            q = profiles.with_carriers(
+                profiles.with_spacing(p, info["spacing"]), info["carriers"])
+        except ValueError:
+            continue
+        if _same_link(q, want):
+            return q.name
     return ""
 
 

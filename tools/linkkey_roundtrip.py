@@ -79,13 +79,26 @@ def main() -> int:
     n = 0
 
     for name, p in profiles.PROFILES.items():
-        counts = profiles.OFDM_CARRIER_CHOICES if p.is_ofdm else (0,)
-        for c in counts:
-            page = {"profile": name, "carriers": c, "mode": p.mode,
+        if not p.is_ofdm:
+            page = {"profile": name, "carriers": 0, "mode": p.mode,
                     "sample_rate": p.sample_rate, "symbol_rate": p.symbol_rate,
                     "rolloff": p.rolloff}
-            ok &= check(f"{name}/{c}" if c else name, page, verbose)
+            ok &= check(name, page, verbose)
             n += 1
+            continue
+        for s in profiles.OFDM_SPACING_CHOICES:
+            for c in profiles.OFDM_CARRIER_CHOICES:
+                # Only combinations the band can hold; the rest are refused at
+                # the dial, so a key for them cannot arise.
+                try:
+                    profiles.with_carriers(profiles.with_spacing(p, s), c)
+                except ValueError:
+                    continue
+                page = {"profile": name, "carriers": c, "spacing": s,
+                        "mode": p.mode, "sample_rate": p.sample_rate,
+                        "symbol_rate": p.symbol_rate, "rolloff": p.rolloff}
+                ok &= check(f"{name}/{c}@{s}", page, verbose)
+                n += 1
 
     # Hand-dialled links, including three whose card rate, symbol rate and
     # roll-off are a preset's exactly. Those are the ones a key that named a

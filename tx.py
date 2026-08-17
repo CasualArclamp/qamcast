@@ -349,6 +349,7 @@ class Transmitter:
                     "modcods": webui.modcod_list(),
                     "sample_rates": webui.sample_rates(),
                     "carrier_choices": list(profiles.OFDM_CARRIER_CHOICES),
+                    "spacing_choices": list(profiles.OFDM_SPACING_CHOICES),
                     "default_profile": webui.default_profile(),
                     "default_profiles": webui.default_profiles(),
                     "symbol_rates": {str(r): webui.symbol_rates(r)
@@ -634,11 +635,15 @@ def build_profile(cfg: dict) -> profiles.Profile:
     name = str(cfg.get("profile") or "WIDE").upper()
     if name != "CUSTOM":
         profile = profiles.get_profile(name)
-        # An OFDM profile's carrier count is a front-panel setting in exactly
-        # the way the profile itself is: it changes the frame geometry, none
-        # of it travels in the header, and both ends must be set the same.
+        # An OFDM profile's spacing and carrier count are front-panel settings
+        # in exactly the way the profile itself is: they change the frame
+        # geometry, none of it travels in the header, and both ends must be set
+        # the same. Spacing first -- it can pull the count down when the band
+        # will not hold it, and the count is then applied on top.
+        if profile.is_ofdm and cfg.get("spacing"):
+            profile = profiles.with_spacing(profile, float(cfg["spacing"]))
         if profile.is_ofdm and cfg.get("carriers"):
-            profile = profiles.with_carriers(profile, int(cfg["carriers"]))
+            profile, _ = _apply_carriers(profile, cfg["carriers"])
         return profile
     return profiles.make_profile(
         sample_rate=int(cfg.get("sample_rate") or 48000),
@@ -747,10 +752,44 @@ def _tightest_modcod(sample_rate: int, symbol_rate: int, bitrate: int,
     return None
 
 
+def _carriers_fit(profile: profiles.Profile, carriers: int) -> bool:
+    """Whether this many carriers fit the profile's band at its spacing."""
+    try:
+        profiles.with_carriers(profile, carriers)
+    except ValueError:
+        return False
+    return True
+
+
+def _apply_carriers(profile: profiles.Profile, carriers) -> tuple:
+    """Set the carrier count, coming down to the widest that fits if it must.
+
+    Widening the spacing makes the band hold fewer carriers, and the count the
+    page is still holding was chosen at the old spacing. Refusing the whole
+    solve over that would mean the spacing dial threw an error every time it
+    was turned upwards -- so the count follows, and says that it did.
+    """
+    if not carriers:
+        return profile, False
+    want = int(carriers)
+    for c in sorted(profiles.OFDM_CARRIER_CHOICES, reverse=True):
+        if c > want:
+            continue
+        try:
+            return profiles.with_carriers(profile, c), c != want
+        except ValueError:
+            continue
+    return profile, True
+
+
 def _solve_ofdm(profile: profiles.Profile, msg: dict) -> dict:
     """What the UI shows for an OFDM profile."""
+    moved = []
     try:
-        profile = profiles.with_carriers(profile, msg.get("carriers") or None)
+        profile = profiles.with_spacing(profile, msg.get("spacing") or None)
+        profile, narrowed = _apply_carriers(profile, msg.get("carriers"))
+        if narrowed:
+            moved.append("carriers")
         modcod = pick_modcod(msg, profile, 0)
     except (KeyError, ValueError) as exc:
         return {"error": f"bad settings: {exc}"}
@@ -758,7 +797,6 @@ def _solve_ofdm(profile: profiles.Profile, msg: dict) -> dict:
     cap = profile.capacity(modcod)
     ceiling = max(0.0, cap.net_bitrate - profiles.PAD_RESERVE_BPS)
     bitrate = int(msg.get("bitrate") or 64000)
-    moved = []
     if bitrate > ceiling:
         bitrate = int(ceiling // 1000) * 1000
         moved.append("bitrate")
@@ -799,20 +837,30 @@ def _solve_ofdm(profile: profiles.Profile, msg: dict) -> dict:
                     f"or raise the MODCOD.",
         "ofdm": {
             "fft": geo.fft, "cp": geo.cp, "carriers": geo.carriers,
-            "carrier_choices": list(profiles.OFDM_CARRIER_CHOICES),
+            # Only the counts this band can actually hold at this spacing.
+            # Offering the rest would be offering settings that error on
+            # Start, since the count is now a width and the band is a limit.
+            "carrier_choices": [
+                c for c in profiles.OFDM_CARRIER_CHOICES
+                if _carriers_fit(profile, c)],
+            "spacing_choices": list(profiles.OFDM_SPACING_CHOICES),
+            "spacing_hz": profile.ofdm_spacing,
+            "delivered_spacing": round(geo.bin_spacing, 1),
             "spacing": round(geo.bin_spacing, 1),
             "delay_spread_ms": round(geo.max_delay_spread * 1000, 2),
             "max_offset_hz": round(geo.max_freq_offset),
             "pilot_every": geo.pilot_every,
             "describe": geo.describe(),
-            # The two halves of the trade, in the terms an operator has to
-            # choose between: an echo longer than the first, or a transmitter
-            # further off frequency than the second, is what breaks the link.
+            # The two dials, in the terms an operator has to choose between.
+            # An echo longer than the first figure, or a transmitter further
+            # off frequency than the second, is what breaks the link -- and
+            # both belong to the spacing alone.
             "trade": (f"Absorbs echoes up to "
                       f"{geo.max_delay_spread * 1000:.2f} ms and carrier "
-                      f"offsets up to {geo.max_freq_offset:.0f} Hz. Fewer "
-                      f"carriers trade echo tolerance for offset tolerance; "
-                      f"more trade it back."),
+                      f"offsets up to {geo.max_freq_offset:.0f} Hz, both set "
+                      f"by the {geo.bin_spacing:.0f} Hz spacing. The carrier "
+                      f"count sets the width and the rate: "
+                      f"{geo.bandwidth / 1000:.1f} kHz here."),
         },
     }
 
@@ -1204,8 +1252,13 @@ def main() -> int:
     ap.add_argument("--carrier", type=float, default=None)
     ap.add_argument("--carriers", type=int, default=None,
                     choices=list(profiles.OFDM_CARRIER_CHOICES),
-                    help="OFDM subcarriers; fewer rides out frequency drift, "
-                         "more rides out echoes. Must match at both ends.")
+                    help="OFDM subcarriers, which set the occupied width and "
+                         "so the bitrate. Must match at both ends.")
+    ap.add_argument("--spacing", type=float, default=None,
+                    choices=list(profiles.OFDM_SPACING_CHOICES),
+                    help="OFDM subcarrier spacing, Hz. Wider rides out "
+                         "frequency drift, narrower rides out echoes. Must "
+                         "match at both ends.")
     ap.add_argument("--pilot-spacing", type=int, default=64, choices=[32, 64, 128])
     ap.add_argument("--mode", default="sc", choices=["sc", "apsk"],
                     help="constellation family for --profile CUSTOM: square "
@@ -1293,6 +1346,7 @@ def main() -> int:
         spec = {"profile": a.profile, "sample_rate": a.sample_rate,
                 "symbol_rate": a.symbol_rate, "rolloff": a.rolloff,
                 "carrier": a.carrier, "carriers": a.carriers,
+                "spacing": a.spacing,
                 "pilot_spacing": a.pilot_spacing, "mode": a.mode,
                 "modcod": a.modcod, "modulation": a.modulation,
                 "code_rate": a.code_rate}

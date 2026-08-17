@@ -192,16 +192,26 @@
     <select id="rolloff"></select>
 
     <div id="carrierRow" style="display:none">
-      <label>Subcarriers</label>
-      <select id="carriers"></select>
+      <div class="row">
+        <div>
+          <label>Subcarrier spacing</label>
+          <select id="spacing"></select>
+        </div>
+        <div>
+          <label>Subcarriers</label>
+          <select id="carriers"></select>
+        </div>
+      </div>
       <div class="note why">
-        The one dial OFDM has. The band is already fixed, so the carrier count
-        is the subcarrier spacing: fewer carriers means wider spacing, which a
-        drifting transmitter cannot push a signal out of, and a shorter guard
-        interval, which a room echo walks straight past. More carriers trades
-        it the other way. Throughput barely moves either way &mdash; that is
-        set by the bandwidth, not by how finely it is sliced. Must match at
-        the receiver.
+        Two dials doing two jobs. <b>Spacing</b> is how rugged the link is, and
+        nothing else: it alone sets how much echo the guard interval absorbs
+        and how far off frequency the transmitter may drift, and those move in
+        opposite directions. <b>Subcarriers</b> is how wide the signal is, and
+        therefore how fast &mdash; the block is spacing &times; count across,
+        so halving the count halves both the bandwidth and the bitrate and
+        changes nothing else. Both must match at the receiver. Widening the
+        spacing can leave the band unable to hold the current count, in which
+        case the count comes down to the widest that fits.
       </div>
     </div>
 
@@ -370,7 +380,8 @@ function drawLadder(rungs) {
 // A field changing on its own is alarming unless it is visibly a consequence
 // of the edit, so whatever the solver moved gets a brief highlight.
 const MOVED_FIELD = {symbol_rate: ['symbolRate'], bitrate: ['bitrate'],
-                     modcod: ['modulation', 'codeRate']};
+                     modcod: ['modulation', 'codeRate'],
+                     carriers: ['carriers']};
 function flash(fields) {
   (fields || []).forEach(f => (MOVED_FIELD[f] || []).forEach(id => {
     const el = $(id);
@@ -408,6 +419,7 @@ async function resolve(driver) {
       // taking the link key and everything the panel says with it.
       mode: $('mode').value,
       carriers: +$('carriers').value || 0,
+      spacing: +$('spacing').value || 0,
       sample_rate: +$('sampleRate').value,
       symbol_rate: +$('symbolRate').value,
       bitrate: readBitrate(),
@@ -433,6 +445,10 @@ async function resolve(driver) {
     $('carrierRow').style.display = isOfdm ? '' : 'none';
     ['rEcho', 'rOffset'].forEach(id => $(id).style.display = isOfdm ? '' : 'none');
     if (isOfdm) {
+      // Spacing first: it decides which counts the band can still hold, and
+      // the server has already filtered the list to those.
+      fill($('spacing'), r.ofdm.spacing_choices.map(
+             s => ({value: s, text: s + ' Hz apart'})), r.ofdm.spacing_hz);
       fill($('carriers'), r.ofdm.carrier_choices.map(
              c => ({value: c, text: c + ' carriers'})), r.ofdm.carriers);
       set('pEcho', r.ofdm.delay_spread_ms.toFixed(2) + ' ms');
@@ -516,6 +532,7 @@ async function applyPreset() {
   // different sensible default, and a preset that does not give you the preset
   // is worse than one that forgets a setting.
   $('carriers').value = '';
+  $('spacing').value = '';
   await resolve('preset');
   if (released) set('pWarn', released);
 }
@@ -618,6 +635,7 @@ $('rolloff').onchange    = () => { deviate(); resolve('rolloff'); };
 // No deviate(): the carrier count is part of an OFDM profile rather than a
 // departure from it, so the preset name still describes the link afterwards.
 $('carriers').onchange   = () => resolve('carriers');
+$('spacing').onchange    = () => resolve('spacing');
 
 // A text box fires `change` on blur, which would leave the panels describing
 // the old number while the box shows the new one. Enter solves immediately;
@@ -897,6 +915,7 @@ $('start').onclick = async () => {
     profile: $('preset').value,
     mode: $('mode').value,
     carriers: +$('carriers').value || 0,
+    spacing: +$('spacing').value || 0,
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,
     rolloff: +$('rolloff').value,

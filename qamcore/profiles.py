@@ -699,7 +699,7 @@ OFDM_DEFAULT_SPACING = 100
 
 
 def make_ofdm_profile(sample_rate: int, band_lo: float, band_hi: float,
-                      carriers: int, cp_fraction: int = 8,
+                      carriers: int | None, cp_fraction: int = 8,
                       name: str = "CUSTOM", description: str = "",
                       base: str = "", template: Profile | None = None,
                       spacing_hz: float = 0.0) -> Profile:
@@ -722,6 +722,8 @@ def make_ofdm_profile(sample_rate: int, band_lo: float, band_hi: float,
     """
     from .ofdm import for_spacing
 
+    # carriers of None means fill the band, which is what a custom link wants
+    # and what the ladder cannot express -- see for_spacing.
     geo = for_spacing(sample_rate, spacing_hz or OFDM_DEFAULT_SPACING, carriers,
                       band_lo, band_hi, cp_fraction)
     if template is not None:
@@ -1022,6 +1024,10 @@ MAX_SPS = 16    # above this you are wasting bandwidth on a slow link
 FRAME_TARGET_SECONDS = 0.25
 FRAME_CHOICES = (2048, 4096, 8192)
 PILOT_CHOICES = (32, 64, 128)
+# The roll-offs a link key can express -- it carries alpha x 100 in a byte, so
+# the constraint is really only that they are whole percents, but a short list
+# is what the presets use and what a band fit should choose between.
+ROLLOFF_CHOICES = (0.15, 0.20, 0.25, 0.30, 0.35)
 
 
 def valid_symbol_rates(sample_rate: int) -> list[int]:
@@ -1043,6 +1049,92 @@ def _frame_for(symbol_rate: int) -> int:
     """Frame length giving roughly FRAME_TARGET_SECONDS."""
     want = symbol_rate * FRAME_TARGET_SECONDS
     return min(FRAME_CHOICES, key=lambda f: abs(f - want))
+
+
+# --------------------------------------------------------------------------
+# Building a link from the band it has to fit
+# --------------------------------------------------------------------------
+#
+# The other way to describe a custom link, and the one an operator can actually
+# answer. "What symbol rate, roll-off and carrier?" is three questions about
+# our implementation; "what does your path pass?" is one question about their
+# equipment, and the three fall out of it.
+#
+# They fall out with nothing left over, which is why this is worth doing rather
+# than being a convenience wrapper: a symbol rate has to divide the card rate,
+# a roll-off comes from a short list, and the carrier is wherever the resulting
+# footprint centres. Only some combinations exist, and picking between them by
+# hand means computing symbol_rate x (1 + alpha) repeatedly and checking it
+# against the band -- which is exactly what a computer should do.
+
+
+def check_band(sample_rate: int, band_lo: float, band_hi: float) -> None:
+    """Reject a band this card cannot carry, saying which end is wrong."""
+    nyquist = sample_rate / 2.0
+    if band_hi <= band_lo:
+        raise ValueError(
+            f"the band's upper edge ({band_hi:.0f} Hz) must be above its "
+            f"lower edge ({band_lo:.0f} Hz)")
+    if band_lo < 0:
+        raise ValueError(f"the band cannot start below DC ({band_lo:.0f} Hz)")
+    if band_hi > nyquist:
+        raise ValueError(
+            f"{band_hi:.0f} Hz is above the {nyquist:.0f} Hz Nyquist limit of "
+            f"a {sample_rate} Hz card. Raise the card rate, or lower the top "
+            f"of the band.")
+
+
+def fit_band(sample_rate: int, band_lo: float, band_hi: float
+             ) -> tuple[int, float, float]:
+    """(symbol_rate, rolloff, carrier) filling a band as fully as it can.
+
+    Two rules, in order:
+
+    **Fastest symbol rate that fits.** The payload rate is proportional to it,
+    so this is simply "use the band you were given".
+
+    **Then the most forgiving roll-off that still reaches that rate.** A
+    tighter roll-off is a narrower footprint for the same rate, so it is what
+    lets the rate go up -- but the rates are quantised by the card, and once a
+    rung is reached a tighter roll-off buys nothing further. Measured on a
+    44.1 kHz card across a 17.6 kHz band: alpha 0.15 and alpha 0.20 both reach
+    14700 Bd, so the answer is 0.20, and the extra timing margin is free. Only
+    where a wider roll-off would actually cost a rung does it lose.
+    """
+    check_band(sample_rate, band_lo, band_hi)
+    width = band_hi - band_lo
+    best: tuple[int, float] | None = None
+    for rolloff in ROLLOFF_CHOICES:
+        for rate in valid_symbol_rates(sample_rate):     # fastest first
+            if rate * (1.0 + rolloff) <= width:
+                if best is None or rate > best[0] or (
+                        rate == best[0] and rolloff > best[1]):
+                    best = (rate, rolloff)
+                break
+    if best is None:
+        slowest = min(valid_symbol_rates(sample_rate) or [0])
+        need = slowest * (1.0 + min(ROLLOFF_CHOICES))
+        raise ValueError(
+            f"{width:.0f} Hz is too narrow for a {sample_rate} Hz card: the "
+            f"slowest symbol rate it can carry is {slowest} Bd, which needs "
+            f"{need:.0f} Hz. Widen the band, or lower the card rate.")
+    rate, rolloff = best
+    # Centred in the band rather than pushed to one edge. The footprint is
+    # usually a little narrower than the band -- the rates are quantised -- and
+    # splitting the slack leaves guard at both ends instead of all at one.
+    carrier = float(round((band_lo + band_hi) / 2.0))
+    return rate, rolloff, carrier
+
+
+def make_profile_for_band(sample_rate: int, band_lo: float, band_hi: float,
+                          pilot_spacing: int = 64,
+                          frame_symbols: int | None = None,
+                          name: str = "CUSTOM", mode: str = "sc") -> Profile:
+    """A single-carrier profile filling the given band."""
+    rate, rolloff, carrier = fit_band(sample_rate, band_lo, band_hi)
+    return make_profile(sample_rate, rate, rolloff, carrier=carrier,
+                        pilot_spacing=pilot_spacing,
+                        frame_symbols=frame_symbols, name=name, mode=mode)
 
 
 def make_profile(sample_rate: int, symbol_rate: int, rolloff: float = 0.25,

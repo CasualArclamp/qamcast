@@ -145,6 +145,27 @@
     <label>Card sample rate</label>
     <select id="sampleRate"></select>
 
+    <div id="bandRow" style="display:none">
+      <div class="row">
+        <div>
+          <label>Lowest usable frequency</label>
+          <input id="bandLo" inputmode="decimal" placeholder="400 Hz">
+        </div>
+        <div>
+          <label>Highest usable frequency</label>
+          <input id="bandHi" inputmode="decimal" placeholder="18000 Hz">
+        </div>
+      </div>
+      <div class="note why">
+        The only two numbers a custom link needs, because they are the only two
+        anyone can measure without knowing anything about this modem: what does
+        your path actually pass? Everything else follows with nothing left over
+        &mdash; on a single carrier the symbol rate, roll-off and carrier
+        frequency; in OFDM the subcarrier count. Type either in hertz or in
+        kilohertz.
+      </div>
+    </div>
+
     <div class="row">
       <div>
         <label class="lockable">Symbol rate
@@ -206,26 +227,18 @@
     </div>
 
     <div id="carrierRow" style="display:none">
-      <div class="row">
-        <div>
-          <label>Subcarrier spacing</label>
-          <select id="spacing"></select>
-        </div>
-        <div>
-          <label>Subcarriers</label>
-          <select id="carriers"></select>
-        </div>
-      </div>
+      <label>Subcarriers</label>
+      <select id="carriers"></select>
       <div class="note why">
-        Two dials doing two jobs. <b>Spacing</b> is how rugged the link is, and
-        nothing else: it alone sets how much echo the guard interval absorbs
-        and how far off frequency the transmitter may drift, and those move in
-        opposite directions. <b>Subcarriers</b> is how wide the signal is, and
-        therefore how fast &mdash; the block is spacing &times; count across,
-        so halving the count halves both the bandwidth and the bitrate and
-        changes nothing else. Both must match at the receiver. Widening the
-        spacing can leave the band unable to hold the current count, in which
-        case the count comes down to the widest that fits.
+        How wide the signal is, and therefore how fast: the block is the
+        subcarrier spacing &times; this count across, so halving it halves both
+        the bandwidth and the bitrate and changes nothing else about how the
+        link behaves. The spacing itself is not a dial &mdash; it is fixed at
+        100&nbsp;Hz, which is the measured middle of the useful range: the
+        widest that clears a 1.1&nbsp;ms room echo, with three times the margin
+        the drift of a real transmitter needs. A preset that wants a different
+        one carries it, and a custom link fills its band at 100. Must match at
+        the receiver.
       </div>
     </div>
 
@@ -319,6 +332,10 @@ let META = null, LOCKSOLVE = false;
 // change lands on whatever is left.
 const LOCKS = new Set();
 
+// The band of whatever is currently selected, kept so that switching to Custom
+// can start from it.
+let LAST_BAND = null;
+
 function fill(sel, items, value) {
   sel.innerHTML = '';
   items.forEach(it => {
@@ -346,6 +363,22 @@ function setSelect(sel, value) {
 // ceiling, which takes the higher entries away -- you could walk down the list
 // but never back up it. A text box has no such memory; the datalist keeps the
 // usual rates one click away without limiting what can be typed.
+// Frequencies, typed the way people say them: "18000", "18k", "18 kHz" and
+// "18.8 kHz" all mean the same band edge. Under 100 is taken as kilohertz --
+// nobody describes an audio path's upper edge as 18 Hz, and everybody
+// describes it as 18k.
+function readHz(id) {
+  const m = String($(id).value).trim().match(/^([\d.]+)\s*k?/i);
+  if (!m) return 0;
+  const v = parseFloat(m[1]);
+  if (!isFinite(v) || v <= 0) return 0;
+  return Math.round(/k/i.test($(id).value) || v < 100 ? v * 1000 : v);
+}
+function showHz(id, hz) {
+  $(id).value = hz >= 1000 ? (hz / 1000).toFixed(hz % 1000 ? 2 : 0) + ' kHz'
+                           : Math.round(hz) + ' Hz';
+}
+
 let LAST_BITRATE = 64000;
 function readBitrate() {
   const m = String($('bitrate').value).trim().match(/^([\d.]+)\s*k?/i);
@@ -433,8 +466,9 @@ async function resolve(driver) {
       // taking the link key and everything the panel says with it.
       mode: $('mode').value,
       carriers: +$('carriers').value || 0,
-      spacing: +$('spacing').value || 0,
       interleave: +$('interleave').value || 0,
+      band_lo: readHz('bandLo'),
+      band_hi: readHz('bandHi'),
       sample_rate: +$('sampleRate').value,
       symbol_rate: +$('symbolRate').value,
       bitrate: readBitrate(),
@@ -449,21 +483,25 @@ async function resolve(driver) {
     // controls go read-only rather than vanishing, so the numbers they hold
     // are still there to read.
     const isOfdm = r.mode === 'ofdm';
-    $('symbolRate').disabled = isOfdm;
-    $('rolloff').disabled = isOfdm || $('preset').value !== 'CUSTOM';
-    $('sampleRate').disabled = isOfdm || $('preset').value !== 'CUSTOM';
+    const custom = $('preset').value === 'CUSTOM';
+    // A custom link is its band, so the symbol rate, roll-off and carrier are
+    // outputs. Left visible and disabled rather than hidden: they are what the
+    // band came to, and that is worth being able to read.
+    $('symbolRate').disabled = isOfdm || custom;
+    $('rolloff').disabled = isOfdm || custom;
+    $('sampleRate').disabled = isOfdm && !custom;
+    $('bandRow').style.display = custom ? '' : 'none';
     document.querySelectorAll('button.lock').forEach(b => {
-      b.style.display = isOfdm && b.dataset.lock !== 'modcod' ? 'none' : '';
+      b.style.display = (isOfdm || custom) && b.dataset.lock !== 'modcod'
+                        ? 'none' : '';
     });
     // The carrier count is the only geometry control OFDM has, so it appears
     // only there -- and takes over the row the symbol rate holds otherwise.
-    $('carrierRow').style.display = isOfdm ? '' : 'none';
+    // The count is a dial on a preset and an output of the band on a custom
+    // link, so it is only offered where it is actually a choice.
+    $('carrierRow').style.display = isOfdm && !custom ? '' : 'none';
     ['rEcho', 'rOffset'].forEach(id => $(id).style.display = isOfdm ? '' : 'none');
     if (isOfdm) {
-      // Spacing first: it decides which counts the band can still hold, and
-      // the server has already filtered the list to those.
-      fill($('spacing'), r.ofdm.spacing_choices.map(
-             s => ({value: s, text: s + ' Hz apart'})), r.ofdm.spacing_hz);
       fill($('carriers'), r.ofdm.carrier_choices.map(
              c => ({value: c, text: c + ' carriers'})), r.ofdm.carriers);
       set('pEcho', r.ofdm.delay_spread_ms.toFixed(2) + ' ms');
@@ -477,6 +515,11 @@ async function resolve(driver) {
     fill($('symbolRate'), isOfdm
          ? [{value: r.symbol_rate, text: r.symbol_rate + ' sym/s'}]
          : r.symbol_rates.map(v => ({value: v, text: v + ' Bd'})), r.symbol_rate);
+    // The roll-off is an output in band mode, so it has to be shown as one --
+    // the box is otherwise only ever written by applyPreset, and a custom link
+    // left it reading whatever the last preset used while the fitter had
+    // chosen something else entirely.
+    setSelect($('rolloff'), r.rolloff);
     fill($('modulation'), modNames().map(m => ({value: m, text: m})), r.modulation);
     fill($('codeRate'), [...new Set(META.modcods.map(m => m.code_rate))]
          .map(c => ({value: c, text: c})), r.code_rate);
@@ -500,6 +543,13 @@ async function resolve(driver) {
     // encoder was handed another.
     if ((r.moved || []).includes('symbol_rate')) deviate();
 
+    LAST_BAND = r.band;
+    // Seed the boxes the first time Custom is shown, so switching to it starts
+    // from the band that was already selected instead of from nothing.
+    if (custom && !(readHz('bandLo') && readHz('bandHi'))) {
+      showHz('bandLo', r.band[0]);
+      showHz('bandHi', r.band[1]);
+    }
     set('pBand', `${(r.band[0]/1000).toFixed(1)} - ${(r.band[1]/1000).toFixed(1)} kHz`);
     set('pSps', r.sps);
     set('pNet', (r.net_bitrate/1000).toFixed(1) + ' kbps');
@@ -549,7 +599,17 @@ async function applyPreset() {
   // different sensible default, and a preset that does not give you the preset
   // is worse than one that forgets a setting.
   $('carriers').value = '';
-  $('spacing').value = '';
+  if (custom) {
+    // Seed Custom from wherever we just were, which is nearly always what is
+    // wanted: "like this preset, but my path stops at 15 kHz".
+    if (LAST_BAND && !(readHz('bandLo') && readHz('bandHi'))) {
+      showHz('bandLo', LAST_BAND[0]);
+      showHz('bandHi', LAST_BAND[1]);
+    }
+  } else {
+    $('bandLo').value = '';
+    $('bandHi').value = '';
+  }
   await resolve('preset');
   if (released) set('pWarn', released);
 }
@@ -570,11 +630,13 @@ function modNames() {
 // change cannot leave a profile of the wrong kind selected.
 function fillPresets(want) {
   const list = META.profiles.filter(p => (p.mode || 'sc') === want);
-  // Custom is a single-carrier idea -- a symbol rate, a roll-off and a carrier
-  // -- and an OFDM link has none of the three. Offering it there produced a
-  // single-carrier plan underneath a panel still labelled OFDM.
-  const items = (want === 'ofdm' || !list.length ? []
-                 : [{value:'CUSTOM', text:'Custom - set everything by hand'}])
+  // Custom is offered in every mode now that it is described by a band. It
+  // used to be a symbol rate, a roll-off and a carrier, which an OFDM link has
+  // none of -- so offering it there produced a single-carrier plan underneath
+  // a panel still labelled OFDM. A band is the one description that fits both.
+  const items = (list.length
+                 ? [{value:'CUSTOM', text:'Custom - give the band your path passes'}]
+                 : [])
       .concat(list.map(p => ({value: p.name, text: p.label})));
   // From the server, so both pages land on the same profile. Not the first of
   // the list: that is sorted by descending card rate, so every mode change
@@ -652,7 +714,6 @@ $('rolloff').onchange    = () => { deviate(); resolve('rolloff'); };
 // No deviate(): the carrier count is part of an OFDM profile rather than a
 // departure from it, so the preset name still describes the link afterwards.
 $('carriers').onchange   = () => resolve('carriers');
-$('spacing').onchange    = () => resolve('spacing');
 // No deviate(): the depth travels in the signalling rather than being part of
 // the profile, so the preset name still describes the link after it moves.
 $('interleave').onchange = () => resolve('interleave');
@@ -667,6 +728,22 @@ function solveBitrate() {
   if (readBitrate() > 0) resolve('bitrate');
   else showBitrate(LAST_BITRATE);   // cleared and left alone; put it back
 }
+// Typed, so the same treatment as the bitrate box: solve on a pause, on Enter
+// and on blur, rather than on every keystroke.
+let bandTyping = null;
+function solveBand() {
+  clearTimeout(bandTyping);
+  if (readHz('bandLo') && readHz('bandHi')) resolve('band');
+}
+['bandLo', 'bandHi'].forEach(id => {
+  $(id).oninput = () => {
+    clearTimeout(bandTyping);
+    bandTyping = setTimeout(solveBand, 600);
+  };
+  $(id).onchange = solveBand;
+  $(id).onkeydown = e => { if (e.key === 'Enter') solveBand(); };
+});
+
 $('bitrate').oninput = () => {
   clearTimeout(typing);
   typing = setTimeout(() => resolve('bitrate'), 600);
@@ -946,8 +1023,9 @@ $('start').onclick = async () => {
     profile: $('preset').value,
     mode: $('mode').value,
     carriers: +$('carriers').value || 0,
-    spacing: +$('spacing').value || 0,
     interleave: +$('interleave').value || 0,
+    band_lo: readHz('bandLo'),
+    band_hi: readHz('bandHi'),
     sample_rate: +$('sampleRate').value,
     symbol_rate: +$('symbolRate').value,
     rolloff: +$('rolloff').value,

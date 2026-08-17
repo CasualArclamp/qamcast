@@ -49,6 +49,18 @@ SCOPE_HZ = 20             # UI refresh, independent of the frame rate
 MAX_PENDING = 300
 
 
+def _band(spec: str | None) -> dict:
+    """--band LO,HI as the two config fields, or nothing at all."""
+    if not spec:
+        return {}
+    try:
+        lo, hi = (float(v) for v in str(spec).split(","))
+    except ValueError:
+        raise SystemExit(f"--band wants two frequencies, like --band 400,18000; "
+                         f"got {spec!r}") from None
+    return {"band_lo": lo, "band_hi": hi}
+
+
 def parse_rate(text: str) -> int:
     t = str(text).strip().lower().rstrip("bps").rstrip()
     mult = 1000 if t.endswith("k") else 1
@@ -653,13 +665,43 @@ def build_profile(cfg: dict) -> profiles.Profile:
         if profile.is_ofdm and cfg.get("carriers"):
             profile, _ = _apply_carriers(profile, cfg["carriers"])
         return profile
+
+    # Custom. Described by the band it has to fit, which is the one question
+    # about a path an operator can answer without knowing anything about this
+    # modem -- the symbol rate, roll-off and carrier, or the subcarrier count,
+    # all fall out of it with nothing left over. See profiles.fit_band.
+    sample_rate = int(cfg.get("sample_rate") or 48000)
+    mode = str(cfg.get("mode") or "sc")
+    lo, hi = cfg.get("band_lo"), cfg.get("band_hi")
+    if mode == "ofdm":
+        if not (lo and hi):
+            raise ValueError("a custom OFDM link needs a band: give the "
+                             "lowest and highest frequency the path passes")
+        # Checked before fitting rather than after: for_spacing clamps the
+        # block to Nyquist and validate() then complains about the clamped
+        # edge, which tells the operator about a number they never typed.
+        profiles.check_band(sample_rate, float(lo), float(hi))
+        return profiles.make_ofdm_profile(
+            sample_rate, float(lo), float(hi), None,
+            int(cfg.get("cp_fraction") or 8), name="CUSTOM",
+            description=f"custom, {sample_rate} Hz card",
+            spacing_hz=profiles.OFDM_DEFAULT_SPACING)
+    if lo and hi:
+        return profiles.make_profile_for_band(
+            sample_rate, float(lo), float(hi),
+            pilot_spacing=int(cfg.get("pilot_spacing") or 64),
+            frame_symbols=int(cfg["frame_symbols"]) if cfg.get("frame_symbols")
+            else None,
+            mode="apsk" if mode == "apsk" else "sc")
+    # The explicit form, still reachable from the command line for anyone who
+    # wants to name a symbol rate outright rather than a band.
     return profiles.make_profile(
-        sample_rate=int(cfg.get("sample_rate") or 48000),
+        sample_rate=sample_rate,
         symbol_rate=int(cfg.get("symbol_rate") or 16000),
         rolloff=float(cfg.get("rolloff") or 0.25),
         carrier=float(cfg["carrier"]) if cfg.get("carrier") else None,
         pilot_spacing=int(cfg.get("pilot_spacing") or 64),
-        mode="apsk" if str(cfg.get("mode") or "") == "apsk" else "sc",
+        mode="apsk" if mode == "apsk" else "sc",
     )
 
 
@@ -898,7 +940,12 @@ def solve(msg: dict) -> dict:
         except linkkey.LinkKeyError as exc:
             return {"error": str(exc)}
         if keyed.is_ofdm:
-            return _solve_ofdm(keyed, {**msg, "carriers": keyed.ofdm_carriers})
+            # Nothing from the page, not even its carrier count. The profile
+            # the key rebuilt is already exact, and feeding its own count back
+            # through the ladder rounds a band-filling one down to the nearest
+            # rung -- 175 carriers arrived and 160 came out, so a key describing
+            # a custom band was applied as a narrower link than it named.
+            return _solve_ofdm(keyed, {**msg, "carriers": 0, "spacing": 0})
         # Including the mode. The key carries the constellation family, and it
         # is the source of truth while it is in force -- reading that one field
         # off the page's selector instead would let a stale dropdown describe
@@ -920,6 +967,40 @@ def solve(msg: dict) -> dict:
         preset_for_mode = None
     if preset_for_mode is not None and preset_for_mode.is_ofdm:
         return _solve_ofdm(preset_for_mode, msg)
+
+    # A custom link is described by its band, and the band settles the whole
+    # physical layer: for OFDM the subcarrier count, for a single carrier the
+    # symbol rate, roll-off and carrier together. Resolve it here so everything
+    # below sees the same three numbers Start will build from, and hold the
+    # symbol rate while it does -- the band chose it, and a solver free to move
+    # it would immediately solve its way back out of the band it was given.
+    # Not while a key is in force. The key already set profile to CUSTOM and
+    # filled in the symbol rate, roll-off and carrier it carries, and the page
+    # goes on sending whatever is in its band boxes -- so fitting the band here
+    # would throw the key's answers away in favour of a stale question.
+    band_lo, band_hi = msg.get("band_lo"), msg.get("band_hi")
+    if not key and name == "CUSTOM" and band_lo and band_hi:
+        sr = int(msg.get("sample_rate") or 48000)
+        try:
+            if str(msg.get("mode") or "") == "ofdm":
+                profiles.check_band(sr, float(band_lo), float(band_hi))
+                # carriers zeroed on the way in, because the band settled it.
+                # A band-filling count is rarely a ladder rung, so the page's
+                # hidden count dropdown cannot hold it and falls back to its
+                # first entry -- which would then arrive here as a request for
+                # 24 carriers and quietly shrink a link the operator had just
+                # described in full.
+                return _solve_ofdm(profiles.make_ofdm_profile(
+                    sr, float(band_lo), float(band_hi), None,
+                    int(msg.get("cp_fraction") or 8), name="CUSTOM",
+                    spacing_hz=profiles.OFDM_DEFAULT_SPACING),
+                    {**msg, "carriers": 0})
+            rate, roll, carrier = profiles.fit_band(sr, float(band_lo),
+                                                    float(band_hi))
+        except ValueError as exc:
+            return {"error": str(exc)}
+        msg = {**msg, "symbol_rate": rate, "rolloff": roll, "carrier": carrier,
+               "locks": sorted(set(msg.get("locks") or ()) | {"symbol_rate"})}
 
     try:
         sample_rate = int(msg.get("sample_rate") or 48000)
@@ -1275,6 +1356,11 @@ def main() -> int:
                     help="preset name, or CUSTOM with --symbol-rate etc")
     ap.add_argument("--sample-rate", type=int, default=48000,
                     help="card rate, used with --profile CUSTOM")
+    ap.add_argument("--band", default=None, metavar="LO,HI",
+                    help="lowest,highest usable frequency in Hz. With "
+                         "--profile CUSTOM this is all a link needs: the "
+                         "symbol rate, roll-off and carrier, or the subcarrier "
+                         "count, are fitted to it.")
     ap.add_argument("--symbol-rate", type=int, default=None, help="baud")
     ap.add_argument("--rolloff", type=float, default=0.25)
     ap.add_argument("--carrier", type=float, default=None)
@@ -1380,7 +1466,7 @@ def main() -> int:
         spec = {"profile": a.profile, "sample_rate": a.sample_rate,
                 "symbol_rate": a.symbol_rate, "rolloff": a.rolloff,
                 "carrier": a.carrier, "carriers": a.carriers,
-                "spacing": a.spacing,
+                "spacing": a.spacing, **_band(a.band),
                 "pilot_spacing": a.pilot_spacing, "mode": a.mode,
                 "interleave": a.interleave,
                 "modcod": a.modcod, "modulation": a.modulation,

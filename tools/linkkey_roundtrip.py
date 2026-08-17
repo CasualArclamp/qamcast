@@ -140,10 +140,42 @@ def main() -> int:
             n += 1
 
     ok &= deviation(verbose)
+    ok, n = bands(verbose, ok, n)
 
     print(f"\n{n} links copied across by key")
     print("PASS" if ok else "FAILURES")
     return 0 if ok else 1
+
+
+def bands(verbose: bool, ok: bool, n: int) -> tuple[bool, int]:
+    """Custom links described only by the band they have to fit.
+
+    The band is now the whole of a custom link, in both modes, so it is the
+    path most of them take. Two things have to hold: the fitted link must sit
+    inside the band it was given -- spilling past an edge the operator named is
+    the failure the OFDM fitter already refuses -- and it must survive a key,
+    which for OFDM means a carrier count that is usually nowhere near a ladder
+    rung and travels as "fill this band" instead.
+    """
+    print("\n-- custom links given only a band")
+    cases = [(44100, 400, 18000), (48000, 300, 20000), (96000, 3000, 42000),
+             (48000, 1000, 13000), (44100, 3000, 12000), (48000, 500, 6000),
+             (44100, 8000, 16000), (96000, 200, 20000)]
+    for sr, lo, hi in cases:
+        for mode in ("sc", "apsk", "ofdm"):
+            page = {"profile": "CUSTOM", "mode": mode, "sample_rate": sr,
+                    "band_lo": lo, "band_hi": hi, "carriers": 0}
+            built = tx.build_profile(page)
+            blo, bhi = built.band
+            # Half a hertz of slack: the band edges are whole hertz and the
+            # occupied edges are not.
+            if blo < lo - 0.5 or bhi > hi + 0.5:
+                print(f"BAD {sr} {lo}-{hi} [{mode}] fitted "
+                      f"{blo:.0f}-{bhi:.0f}, outside the band it was given")
+                ok = False
+            ok &= check(f"band {lo}-{hi} @{sr//1000}k [{mode}]", page, verbose)
+            n += 1
+    return ok, n
 
 
 def deviation(verbose: bool) -> bool:

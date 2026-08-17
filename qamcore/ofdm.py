@@ -292,7 +292,29 @@ def fft_for_spacing(sample_rate: int, spacing_hz: float) -> int:
     return fft
 
 
-def for_spacing(sample_rate: int, spacing_hz: float, carriers: int,
+def carriers_for_band(sample_rate: int, spacing_hz: float,
+                      band_lo: float, band_hi: float) -> int:
+    """How many subcarriers of this spacing the band holds.
+
+    The count a custom link gets, and derived identically at both ends from
+    numbers a link key already carries -- so it needs no ladder rung and no
+    field of its own.
+    """
+    fft = fft_for_spacing(sample_rate, spacing_hz)
+    spacing = sample_rate / fft
+    lo = max(1, int(np.ceil(band_lo / spacing)))
+    hi = min(fft // 2 - 1, int(np.floor(band_hi / spacing)) - 1)
+    room = hi - lo + 1
+    if room < MIN_CARRIERS:
+        raise ValueError(
+            f"{band_lo:.0f}-{band_hi:.0f} Hz holds {max(0, room)} subcarriers "
+            f"at {spacing:.0f} Hz spacing, and the MODCOD codeword needs at "
+            f"least {MIN_CARRIERS}. Widen the band."
+        )
+    return room
+
+
+def for_spacing(sample_rate: int, spacing_hz: float, carriers: int | None,
                 band_lo: float, band_hi: float, cp_fraction: int = 8,
                 symbols_per_frame: int | None = None) -> OfdmGeometry:
     """A geometry of ``carriers`` subcarriers at a fixed spacing.
@@ -301,7 +323,13 @@ def for_spacing(sample_rate: int, spacing_hz: float, carriers: int,
     ``carriers`` wide whatever the band is, and is centred in it. Centred, not
     anchored low, so reducing the count takes the same amount off each edge and
     the signal stays where the operator put it.
+
+    ``carriers`` of None means *fill the band* -- as many as it holds. That is
+    what a custom link asks for, and it is derivable rather than chosen, so it
+    needs no rung on the ladder.
     """
+    if carriers is None:
+        carriers = carriers_for_band(sample_rate, spacing_hz, band_lo, band_hi)
     if carriers < MIN_CARRIERS:
         raise ValueError(f"at least {MIN_CARRIERS} carriers, got {carriers}")
     fft = fft_for_spacing(sample_rate, spacing_hz)

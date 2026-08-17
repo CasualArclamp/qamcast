@@ -102,6 +102,43 @@ Symbol rates are not free choices either: samples-per-symbol has to be a whole
 number, so the card's rate factorises the options (48000/16000 = 3,
 44100/14700 = 3, 44100/8820 = 5).
 
+### Custom: give it the band
+
+A custom link is described by **two numbers — the lowest and highest frequency
+your path passes** — and everything else is fitted to them. That is the only
+question about a link an operator can answer without knowing anything about
+this modem, and the rest follows from it with nothing left over:
+
+| Mode | Fitted from the band |
+|---|---|
+| QAM / APSK | symbol rate, roll-off, carrier frequency |
+| OFDM | subcarrier count |
+
+```bash
+python tx.py --profile CUSTOM --band 400,18000 --source live.mp3
+```
+
+Two rules pick the single-carrier fit, in order. **Fastest symbol rate that
+fits**, since the payload rate is proportional to it. **Then the most forgiving
+roll-off that still reaches that rate** — a tighter roll-off is what lets the
+rate go up, but the rates are quantised by the card, so once a rung is reached
+a tighter one buys nothing and the extra timing margin is free. On a 44.1 kHz
+card a 2–12 kHz band comes out at 7350 Bd with α 0.35, filling 9.92 kHz of the
+10 available; a 0.4–18 kHz band comes out at 14700 Bd with α 0.15.
+
+OFDM fills the band at the 100 Hz spacing, which is not a dial: it is the
+measured middle of the useful range — the widest that clears a 1.1 ms room
+echo, with three times the margin a real transmitter's drift needs. See
+*Spacing and carrier count*. A count that fills a band is rarely one of the
+ladder rungs, so it travels in the link key as "as many as this band holds",
+derived identically at both ends from the band and the spacing the key already
+carries. Measured across eight bands in all three modes, every fit lands inside
+the band it was given and survives the key exactly.
+
+Asking for more than the card can carry is refused with the number that is
+wrong, rather than clamped and then reported as an aliasing warning about an
+edge you never typed.
+
 ```bash
 python tools/rates.py WIDE
 ```
@@ -329,12 +366,18 @@ margin over the radio channel's drift. The 25 Hz column is the offset cliff —
 softening.
 
 Both ends must be set the same, exactly like the profile — none of it travels
-in the header. `--spacing 100 --carriers 64` on both apps, or the two dropdowns
-on both pages. Both show in the profile name, so `OFDM48-64@100` names the link
+in the header. Both show in the profile name, so `OFDM48-64@100` names the link
 completely and can be handed straight to `--profile` at the far end. Asking for
 more carriers than the band can hold at a given spacing is refused rather than
 allowed to spill past the upper edge — on an FM path that edge is the 19 kHz
 stereo pilot.
+
+**The spacing is not on the pages.** It is fixed at 100 Hz, the measured middle
+of the range above, and the table is why: efficiency moves 12% across the whole
+span while the two tolerances move sixteen-fold, so there is one sensible
+answer for a path nobody has characterised, and the presets that want a
+different one carry it themselves. `--spacing` is still there for measurement,
+and `tools/spacing.py` is what it is for.
 
 ### Reverb, which used to be the case that failed
 

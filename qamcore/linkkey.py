@@ -67,6 +67,14 @@ VERSION = 3
 _RECORD = 10
 _BODY_CHARS = 16          # ceil(10 bytes * 8 / 5)
 
+# Subcarrier count index meaning "as many as the band holds at this spacing".
+# The ladder has fourteen rungs, so this is spare, and the count it stands for
+# is derivable from the band and the spacing -- both already in the record.
+# It is what a custom link uses: a band chosen by the operator will rarely have
+# room for exactly a ladder rung, and rounding down to one would leave up to a
+# fifth of the band they asked for unused.
+CARRIERS_FILL = 15
+
 MODE_SINGLE = 0
 MODE_OFDM = 1
 # Same fields as single carrier -- APSK changes only how the bits are laid out
@@ -136,8 +144,17 @@ def encode(profile: profiles.Profile) -> str:
                        "prefix fraction") << 4
         body[4], body[5] = _u16(profile.ofdm_band_lo, "band low")
         body[6], body[7] = _u16(profile.ofdm_band_hi, "band high")
-        body[8] = (_index(profile.ofdm_carriers, profiles.OFDM_CARRIER_CHOICES,
-                          "subcarrier count")
+        # A count off the ladder is a band-filling one -- that is the only way
+        # to get there -- and it needs no rung, because "as many as this band
+        # holds at this spacing" is derivable from two fields the key already
+        # carries. So it travels as the sentinel and is recomputed on decode.
+        count = profile.ofdm_carriers
+        if count in profiles.OFDM_CARRIER_CHOICES:
+            count_idx = _index(count, profiles.OFDM_CARRIER_CHOICES,
+                               "subcarrier count")
+        else:
+            count_idx = CARRIERS_FILL
+        body[8] = (count_idx
                    | _index(profile.ofdm_spacing, profiles.OFDM_SPACING_CHOICES,
                             "subcarrier spacing") << 4)
     else:
@@ -184,7 +201,8 @@ def decode(key: str) -> dict:
     if mode == MODE_OFDM:
         count_idx = raw[8] & 0x0F
         spacing_idx = raw[8] >> 4
-        if count_idx >= len(profiles.OFDM_CARRIER_CHOICES):
+        if (count_idx != CARRIERS_FILL
+                and count_idx >= len(profiles.OFDM_CARRIER_CHOICES)):
             raise LinkKeyError("the key names a subcarrier count this build "
                                "does not have")
         if spacing_idx >= len(profiles.OFDM_SPACING_CHOICES):
@@ -194,7 +212,10 @@ def decode(key: str) -> dict:
             "mode": "ofdm",
             "sample_rate": sample_rate,
             "band": [float(a), float(b)],
-            "carriers": profiles.OFDM_CARRIER_CHOICES[count_idx],
+            # None means "as many as the band holds", worked out the same way
+            # at both ends. See encode.
+            "carriers": (None if count_idx == CARRIERS_FILL
+                         else profiles.OFDM_CARRIER_CHOICES[count_idx]),
             "spacing": profiles.OFDM_SPACING_CHOICES[spacing_idx],
             "cp_fraction": profiles.OFDM_CP_CHOICES[(flags >> 4) & 3],
         }
@@ -246,13 +267,15 @@ def describe(info: dict) -> str:
     parts = [f"{info['sample_rate'] / 1000:g} kHz card"]
     if info["mode"] == "apsk":
         parts.append("APSK")
-    if info["carriers"]:
-        parts.append(f"OFDM {info['carriers']} carriers")
-        parts.append(f"{info['spacing']:g} Hz apart")
+    if info["mode"] == "ofdm":
         # The band the block actually occupies, not the envelope it was fitted
         # into. Those differ by up to a carrier, and the occupied one is what
-        # an operator checks against a waterfall.
-        lo, hi = to_profile(info).band
+        # an operator checks against a waterfall. It also tells us the count
+        # when the key left that to be derived.
+        built = to_profile(info)
+        lo, hi = built.band
+        parts.append(f"OFDM {built.ofdm_carriers} carriers")
+        parts.append(f"{info['spacing']:g} Hz apart")
         parts.append(f"{lo / 1000:.1f}-{hi / 1000:.1f} kHz")
     else:
         parts.append(f"{info['symbol_rate']} Bd")

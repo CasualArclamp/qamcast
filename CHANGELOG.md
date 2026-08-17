@@ -1,5 +1,48 @@
 # Changelog
 
+## v1.3.0 — a custom link is just its band
+
+**Changed**
+
+- **Custom mode now asks for two numbers: the lowest and highest frequency your
+  path passes.** Everything else is fitted to them — on a single carrier the
+  symbol rate, roll-off and carrier frequency; in OFDM the subcarrier count.
+  That is the only question about a link an operator can answer without knowing
+  anything about this modem, and the rest follows with nothing left over.
+  `--band 400,18000` on both apps, or the two boxes on both pages.
+- **Custom works in OFDM now.** It was withdrawn in v1.1.0 because a symbol
+  rate, a roll-off and a carrier describe nothing an OFDM link has. A band
+  describes both.
+- **The subcarrier spacing dropdown is gone**, fixed at 100 Hz — the measured
+  middle of the useful range, and the one sensible answer for a path nobody has
+  characterised. Efficiency moves 12% across the whole span while echo and
+  drift tolerance move sixteen-fold, so it was a dial with one right setting.
+  Presets that want another carry it; `--spacing` remains for measurement.
+- The derived symbol rate and roll-off are shown but not editable in band mode,
+  since they are outputs.
+
+**Fitting rules**, in order: fastest symbol rate that fits, then the most
+forgiving roll-off that still reaches it. The rates are quantised by the card,
+so once a rung is reached a tighter roll-off buys nothing and the extra timing
+margin is free. A 2–12 kHz band on a 44.1 kHz card comes out at 7350 Bd with
+α 0.35, filling 9.92 kHz of the 10 available.
+
+**Link key** — a band-filling carrier count is rarely a ladder rung, so it
+travels as "as many as this band holds", derived identically at both ends from
+the band and spacing already in the record. No format change; existing keys are
+byte-identical.
+
+**Fixed**
+
+- A link key naming a band-filled OFDM link was applied one ladder rung
+  narrower than it said: the panel fed the key's own count back through the
+  rung table, and 175 carriers came out as 160.
+- Asking for a band wider than the card can carry is refused with the number
+  that is wrong, instead of being clamped and then reported as an aliasing
+  warning about an edge you never typed.
+- `tools/pagecheck.py` follows one hop of indirection, so a control read
+  through a helper is no longer a false positive needing an exemption.
+
 ## v1.2.0 — selectable interleaver depth
 
 **Added**

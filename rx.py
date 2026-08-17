@@ -96,6 +96,18 @@ class RateMeter:
         return self._bytes * 8.0 / self.window
 
 
+def _band(spec: str | None) -> dict:
+    """--band LO,HI as the two config fields, or nothing at all."""
+    if not spec:
+        return {}
+    try:
+        lo, hi = (float(v) for v in str(spec).split(","))
+    except ValueError:
+        raise SystemExit(f"--band wants two frequencies, like --band 400,18000; "
+                         f"got {spec!r}") from None
+    return {"band_lo": lo, "band_hi": hi}
+
+
 def _shutdown(*objs) -> None:
     """Close or stop each of these, whatever it takes, without raising.
 
@@ -762,6 +774,9 @@ def main() -> int:
                     help="preset name, or CUSTOM with --symbol-rate etc")
     ap.add_argument("--sample-rate", type=int, default=48000,
                     help="card rate, used with --profile CUSTOM")
+    ap.add_argument("--band", default=None, metavar="LO,HI",
+                    help="lowest,highest usable frequency in Hz; with "
+                         "--profile CUSTOM this is all a link needs")
     ap.add_argument("--symbol-rate", type=int, default=None, help="baud")
     ap.add_argument("--rolloff", type=float, default=0.25)
     ap.add_argument("--carrier", type=float, default=None)
@@ -824,7 +839,7 @@ def main() -> int:
                         "sample_rate": a.sample_rate, "symbol_rate": a.symbol_rate,
                         "rolloff": a.rolloff, "carrier": a.carrier,
                         "carriers": a.carriers, "mode": a.mode,
-                        "spacing": a.spacing,
+                        "spacing": a.spacing, **_band(a.band),
                         "pilot_spacing": a.pilot_spacing})
         if res.get("error"):
             print(res["error"], file=sys.stderr)

@@ -54,10 +54,6 @@ atob btoa structuredClone queueMicrotask
 # Controls that do reach the server, but not by name in the payload. Each is
 # read through something else, so the literal check below cannot see it.
 INDIRECT = {
-    "web/tx.html": {
-        # readBitrate() normalises "96 kbps" to bits before it travels.
-        "bitrate": "read through readBitrate()",
-    },
     "web/rx.html": {
         # Copied into KEY on Apply; KEY is what travels, and it stays in force
         # until a dial is touched. The box itself is deliberately not read at
@@ -91,6 +87,40 @@ def panel(text: str, heading: str) -> str:
         if end > at:
             return text[start:end]
     return ""
+
+
+def functions(js: str) -> dict[str, str]:
+    """Every `function name(...) { ... }` body, by name."""
+    out: dict[str, str] = {}
+    for m in re.finditer(r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{", js):
+        end = balanced(js, m.end() - 1, r"\{", r"\}")
+        if end > 0:
+            out[m.group(1)] = js[m.end() - 1:end]
+    return out
+
+
+def reads(body: str, bodies: dict[str, str], known: set[str]) -> set[str]:
+    """Element ids a payload reads, through one hop of indirection.
+
+    A control does not stop being sent because it is read through a function,
+    and the two helpers here reach their element differently:
+
+        readBitrate()      names the element inside itself
+        readHz('bandLo')   takes the id as an argument
+
+    So both the callee's body and the call site's string arguments count. The
+    argument case is why any bare string in the payload that happens to be a
+    control's id is accepted -- loose, but it cannot hide the failure this
+    exists for, which is an id that appears nowhere in the payload at all.
+    """
+    ids = set(re.findall(r"""\$\(\s*['"]([^'"]+)['"]\s*\)""", body))
+    ids |= {s for s in re.findall(r"""['"]([A-Za-z_$][\w$]*)['"]""", body)
+            if s in known}
+    for name in set(re.findall(r"(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(", body)):
+        if name in bodies:
+            ids |= set(re.findall(r"""\$\(\s*['"]([^'"]+)['"]\s*\)""",
+                                  bodies[name]))
+    return ids
 
 
 def payloads(js: str) -> dict[str, str]:
@@ -177,15 +207,16 @@ def link_panel(page: str, text: str, js: str) -> list[str]:
             controls.append(got.group(1))
 
     sent = payloads(js)
+    bodies = functions(js)
     exempt = INDIRECT.get(page, {})
     out = []
     for cmd in ("solve", "start"):
         if cmd not in sent:
             out.append(f"no control({{cmd: '{cmd}'}}) call found")
             continue
-        reads = set(re.findall(r"""\$\(\s*['"]([^'"]+)['"]\s*\)""", sent[cmd]))
+        seen = reads(sent[cmd], bodies, set(controls))
         for name in controls:
-            if name in reads or name in exempt:
+            if name in seen or name in exempt:
                 continue
             out.append(f"the Link panel's #{name} is never sent to '{cmd}' -- "
                        f"changing it would do nothing")

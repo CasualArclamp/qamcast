@@ -109,10 +109,8 @@
     <label style="display:inline"><input type="checkbox" id="passthrough" style="width:auto">
       pass through &mdash; send the stream's own packets, no re-encode</label>
     <label>Codec</label>
-    <select id="codec">
-      <option value="opus">Opus &mdash; one codec, 16-192k, has concealment</option>
-      <option value="aac">HE-AAC &mdash; steps v2 to v1 to LC as rate rises</option>
-    </select>
+    <select id="codec"></select>
+    <div class="note" id="codecAvail">&nbsp;</div>
     <div class="ladder" id="codecLadder"></div>
     <div class="note" id="codecWhy">&nbsp;</div>
 
@@ -344,7 +342,7 @@
 <script>
 const RATES = [16,24,32,48,64,80,96,112,128,160,192];
 const $ = id => document.getElementById(id);
-let META = null, LOCKSOLVE = false;
+let META = null, LOCKSOLVE = false, CODECS = [];
 
 // Fields the solver is forbidden to move. Symbol rate, MODCOD and bitrate are
 // three views of one number, so editing any one of them means something else
@@ -668,6 +666,20 @@ function fillPresets(want) {
 
 control({cmd:'profiles'}).then(r => {
   META = r;
+  // Built from what this ffmpeg can actually encode, asked of it rather than
+  // listed from a table -- an option that fails at Start is a control that
+  // looks alive and does nothing. Anything unavailable stays visible and
+  // disabled, with the reason, because "why is xHE-AAC not here" is a worse
+  // question than a greyed-out row that answers itself.
+  fill($('codec'), (r.codecs || []).map(c => ({
+    value: c.value,
+    text: c.label + ' — ' + (c.encode ? c.why : 'not available here'),
+  })), 'opus');
+  (r.codecs || []).forEach(c => {
+    const o = [...$('codec').options].find(x => x.value === c.value);
+    if (o && !c.encode) o.disabled = true;
+  });
+  CODECS = r.codecs || [];
   fillPresets($('mode').value);
   fill($('sampleRate'), r.sample_rates.map(v => ({value: v, text: (v/1000) + ' kHz'})), 48000);
   // Built from the profiles, not hardcoded. A preset whose roll-off is missing
@@ -705,7 +717,17 @@ function deviate() {
 
 // The codec does not change the link at all -- it only decides which encoder
 // profile runs -- so this re-solves purely to redraw the ladder.
-$('codec').onchange = () => resolve('codec');
+$('codec').onchange = () => { showCodecAvail(); resolve('codec'); };
+
+// Only ever says something when there is something to say. A codec that works
+// needs no note; one that cannot be encoded here needs the reason and the fact
+// that receiving and relaying it still work.
+function showCodecAvail() {
+  const c = CODECS.find(x => x.value === $('codec').value);
+  const bad = c && !c.encode;
+  set('codecAvail', bad ? c.unavailable : ' ');
+  $('codecAvail').className = 'note' + (bad ? ' warn' : '');
+}
 $('copyKey').onclick = async () => {
   const key = $('linkKey').value;
   if (!key || key === '-') return;

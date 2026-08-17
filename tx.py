@@ -384,6 +384,10 @@ class Transmitter:
                     "spacing_choices": list(profiles.OFDM_SPACING_CHOICES),
                     "default_profile": webui.default_profile(),
                     "default_profiles": webui.default_profiles(),
+                    # Asked of this ffmpeg rather than listed from a table, so
+                    # the dropdown cannot offer something that fails at Start.
+                    "codecs": codec.codec_options(self.ffmpeg or
+                                                  codec.find_ffmpeg()),
                     "symbol_rates": {str(r): webui.symbol_rates(r)
                                      for r in webui.sample_rates()}}
         if cmd == "solve":
@@ -1408,7 +1412,8 @@ def main() -> int:
     ap.add_argument("--modulation", default=None,
                     choices=sorted(profiles.BITS_BY_MODULATION))
     ap.add_argument("--code-rate", default=None, help="e.g. 3/4")
-    ap.add_argument("--codec", default="opus", choices=["opus", "aac"])
+    ap.add_argument("--codec", default="opus",
+                    choices=["opus", "aac", "xhe"])
     ap.add_argument("--bitrate", default="128k")
     ap.add_argument("--passthrough", action="store_true",
                     help="send the source's own packets without re-encoding; "

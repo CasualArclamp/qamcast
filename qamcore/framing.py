@@ -49,11 +49,17 @@ CODEC_OPUS = 0
 CODEC_HE_AAC_V2 = 1
 CODEC_HE_AAC_V1 = 2
 CODEC_AAC_LC = 3
+# MPEG-D USAC. Carried in LOAS/LATM rather than ADTS -- see split_loas in
+# codec.py: the ADTS header's two-bit profile field covers the MPEG-2 AAC
+# profiles and has no value meaning USAC, so ADTS cannot describe this stream
+# at all. The field is three bits wide, so 5, 6 and 7 remain.
+CODEC_XHE_AAC = 4
 CODEC_NAMES = {
     CODEC_OPUS: "Opus",
     CODEC_HE_AAC_V2: "HE-AACv2",
     CODEC_HE_AAC_V1: "HE-AACv1",
     CODEC_AAC_LC: "AAC-LC",
+    CODEC_XHE_AAC: "xHE-AAC",
 }
 
 FLAG_CONFIG = 0x1   # a codec config packet starts in this frame

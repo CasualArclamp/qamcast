@@ -24,6 +24,7 @@ Packet framing differs by codec and is handled in one place:
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import queue
@@ -77,6 +78,35 @@ def has_encoder(ffmpeg: str, name: str) -> bool:
     return any(line.split()[1:2] == [name] for line in out.splitlines() if line.strip())
 
 
+@functools.lru_cache(maxsize=None)
+def can_encode(ffmpeg: str, encoder: str, profile: str | None,
+               container: str) -> bool:
+    """Whether this ffmpeg will really encode that profile, asked by trying it.
+
+    Listing the encoder is not enough. libfdk_aac is present in this build and
+    still refuses `-profile:a usac`, because the open-source FDK ships a USAC
+    decoder and no USAC encoder -- the capability is a property of the library
+    that was linked, not of the name in the encoder list. The only answer that
+    can be trusted is what happens when you ask it to encode something.
+
+    A twentieth of a second of tone, discarded. Cached, so the cost is paid
+    once per process for each combination the UI wants to offer.
+    """
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
+           "-f", "lavfi", "-i", "sine=f=440:d=0.05", "-ac", "2",
+           "-c:a", encoder, "-b:a", "32k"]
+    if profile:
+        cmd += ["-profile:a", profile]
+    if container == "latm":
+        cmd += ["-latm", "1"]
+    cmd += ["-f", container, "pipe:1"]
+    try:
+        done = subprocess.run(cmd, capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0 and bool(done.stdout)
+
+
 # --------------------------------------------------------------------------
 # Profile selection
 # --------------------------------------------------------------------------
@@ -96,6 +126,10 @@ CODEC_FEATURES = {
     framing.CODEC_AAC_LC: (False, False),
     framing.CODEC_HE_AAC_V1: (True, False),
     framing.CODEC_HE_AAC_V2: (True, True),
+    # xHE-AAC has SBR and a stereo tool, but neither is the HE-AAC one and
+    # neither is readable from the stream the way the ADTS/ASC flags are, so
+    # this reports what can be said rather than guessing.
+    framing.CODEC_XHE_AAC: (True, False),
 }
 
 
@@ -110,7 +144,7 @@ class CodecChoice:
     codec_id: int          # framing.CODEC_*
     encoder: str           # ffmpeg encoder name
     profile: str | None    # libfdk_aac -profile:a value
-    container: str         # "ogg" or "adts"
+    container: str         # "ogg", "adts" or "latm"
 
     @property
     def name(self) -> str:
@@ -126,6 +160,7 @@ class CodecChoice:
 
 
 AAC_ALIASES = ("aac", "he-aac", "heaac", "he-aacv2")
+XHE_ALIASES = ("xhe", "xhe-aac", "xheaac", "usac")
 
 # The HE-AAC ladder, as (upper bitrate bound inclusive, choice, why). Kept as
 # data rather than a chain of ifs because the UI has to show the user where
@@ -147,11 +182,26 @@ AAC_LADDER: tuple[tuple[int | None, "CodecChoice", str], ...] = (
 
 OPUS_CHOICE = CodecChoice(framing.CODEC_OPUS, "libopus", None, "ogg")
 
+# xHE-AAC. Present as a code point, a container and a decode path, so a source
+# that already carries it can be relayed bit-exact and played at the far end.
+#
+# **Nothing here encodes it**, and that is not an omission this code can fix.
+# The open-source FDK ships a USAC decoder and no USAC encoder, ffmpeg's native
+# AAC encoder is LC only, and MediaFoundation's is too -- checked against this
+# build, where `-profile:a usac`, `xhe` and `aac_usac` are all rejected by
+# libfdk_aac and no encoder advertises USAC at all. Producing it needs exhale,
+# Apple's afconvert, or a licensed Fraunhofer encoder. If one appears on this
+# machine, encoder_profiles() below will find it and the ladder will offer it;
+# until then the honest interface is passthrough, which is the useful case
+# anyway: xHE-AAC exists to be good at 24-32 kbps, which is exactly the range
+# these channels have.
+XHE_CHOICE = CodecChoice(framing.CODEC_XHE_AAC, "libfdk_aac", "usac", "latm")
+
 # Every code point the frame header can name, keyed by that code point. Used
 # by passthrough, which starts from what the source *is* rather than from what
 # to encode it as.
 CHOICE_BY_ID = {c.codec_id: c for c in
-                [OPUS_CHOICE] + [ch for _, ch, _ in AAC_LADDER]}
+                [OPUS_CHOICE, XHE_CHOICE] + [ch for _, ch, _ in AAC_LADDER]}
 
 
 def _choice_for_id(codec_id: int) -> CodecChoice:
@@ -166,11 +216,52 @@ def choose(codec: str, bitrate: int) -> CodecChoice:
     codec = codec.lower()
     if codec == "opus":
         return OPUS_CHOICE
+    if codec in XHE_ALIASES:
+        return XHE_CHOICE
     if codec in AAC_ALIASES:
         for limit, choice, _ in AAC_LADDER:
             if limit is None or bitrate <= limit:
                 return choice
-    raise CodecError(f"unknown codec {codec!r}; expected 'opus' or 'aac'")
+    raise CodecError(
+        f"unknown codec {codec!r}; expected 'opus', 'aac' or 'xhe'")
+
+
+# What the codec dropdown offers, and whether this machine can actually
+# produce each one. Kept here rather than in the page because the answer is a
+# property of the ffmpeg that is linked, and the page must not offer a setting
+# that fails at Start -- an encoder that is listed and then refuses is exactly
+# the shape of a control that looks alive and does nothing.
+UI_CODECS = (
+    ("opus", "Opus", OPUS_CHOICE,
+     "one codec, 16-192k, has concealment"),
+    ("aac", "HE-AAC", AAC_LADDER[-1][1],
+     "steps v2 to v1 to LC as rate rises"),
+    ("xhe", "xHE-AAC", XHE_CHOICE,
+     "MPEG-D USAC, strongest at 24-32k"),
+)
+
+# Why xHE-AAC is usually unavailable, in the terms someone can act on.
+XHE_NO_ENCODER = (
+    "no xHE-AAC encoder in this ffmpeg. The open-source Fraunhofer FDK "
+    "ships a USAC decoder and no USAC encoder, and neither ffmpeg's native "
+    "AAC encoder nor MediaFoundation's does it either. Receiving and "
+    "passing through an xHE-AAC stream both work; only making one does not."
+)
+
+
+def codec_options(ffmpeg: str) -> list[dict]:
+    """The codec dropdown, with what this build can really encode."""
+    out = []
+    for value, label, choice, why in UI_CODECS:
+        ok = can_encode(ffmpeg, choice.encoder, choice.profile,
+                        choice.container)
+        out.append({
+            "value": value, "label": label, "why": why, "encode": ok,
+            "unavailable": "" if ok else (
+                XHE_NO_ENCODER if value == "xhe" else
+                f"{os.path.basename(ffmpeg)} cannot encode {label}."),
+        })
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -198,6 +289,12 @@ AAC_PROFILES = {
     "lc": framing.CODEC_AAC_LC,
     "main": framing.CODEC_AAC_LC,
     "ltp": framing.CODEC_AAC_LC,
+    # What ffprobe calls USAC. Spellings vary between builds and none of them
+    # is expensive to accept.
+    "xhe-aac": framing.CODEC_XHE_AAC,
+    "usac": framing.CODEC_XHE_AAC,
+    "extendedhe-aac": framing.CODEC_XHE_AAC,
+    "mpeg-dusac": framing.CODEC_XHE_AAC,
 }
 
 
@@ -306,6 +403,13 @@ def passthrough_choice(info: dict) -> dict:
                               f"point in the frame header."}
         out = {"ok": True, "codec_id": cid,
                "reason": "ADTS frames copy straight into frames."}
+        if cid == framing.CODEC_XHE_AAC:
+            # LOAS rather than ADTS, and the reason is worth saying: an ADTS
+            # header cannot describe a USAC stream, so a source carrying one is
+            # already in LOAS or MP4 and ffmpeg remuxes it to LOAS untouched.
+            out["reason"] = ("xHE-AAC copies straight into frames, in "
+                             "LOAS/LATM -- ADTS cannot describe it.")
+            return out
         # ffprobe reports "HE-AAC" for both v1 and v2, because Parametric
         # Stereo is signalled inside the SBR extension payload rather than in
         # the ADTS header it reads -- confirmed here against a stream that is
@@ -339,8 +443,15 @@ def ladder(codec: str, bitrate: int | None = None) -> list[dict]:
                  "range": "16-192k", "why": "one configuration across the "
                  "whole range, with packet-loss concealment built in",
                  "sbr": OPUS_CHOICE.sbr, "ps": OPUS_CHOICE.ps, "active": True}]
+    if codec in XHE_ALIASES:
+        return [{"name": XHE_CHOICE.name, "from": None, "to": None,
+                 "range": "16-64k", "why": "MPEG-D USAC in LOAS/LATM -- one "
+                 "configuration, and the strongest thing there is at the "
+                 "bottom of that range",
+                 "sbr": XHE_CHOICE.sbr, "ps": XHE_CHOICE.ps, "active": True}]
     if codec not in AAC_ALIASES:
-        raise CodecError(f"unknown codec {codec!r}; expected 'opus' or 'aac'")
+        raise CodecError(
+            f"unknown codec {codec!r}; expected 'opus', 'aac' or 'xhe'")
 
     # Which rung is live comes from choose() rather than being re-derived, so
     # what the UI highlights is by construction what the encoder will run.
@@ -390,6 +501,47 @@ def split_adts(buf: bytearray) -> list[bytes]:
 
 
 # --------------------------------------------------------------------------
+# LOAS/LATM framing
+# --------------------------------------------------------------------------
+#
+# The other self-delimiting AAC transport, and the one xHE-AAC needs. ADTS
+# cannot carry it: the ADTS header has a two-bit profile field covering the
+# three MPEG-2 AAC profiles and nothing else, so there is no value in it that
+# means USAC. LOAS has no such field -- the configuration travels as a
+# StreamMuxConfig inside the stream -- which is why broadcast AAC uses it.
+#
+# audioSyncStream() is a plain 3-byte header:
+#
+#     11 bits   syncword, 0x2B7
+#     13 bits   audioMuxLengthBytes, the payload after this header
+#
+# so slicing is the same shape as ADTS and needs no codec knowledge at all.
+
+LOAS_SYNC = 0x2B7
+
+
+def split_loas(buf: bytearray) -> list[bytes]:
+    """Pull whole LOAS frames off the front of ``buf``, in place."""
+    frames: list[bytes] = []
+    while len(buf) >= 3:
+        if buf[0] != 0x56 or (buf[1] & 0xE0) != 0xE0:
+            # Lost sync. The first byte of the syncword is fixed, so that is
+            # what to hunt for; the second is checked on the next pass.
+            nxt = buf.find(b"\x56", 1)
+            if nxt < 0:
+                buf.clear()
+                break
+            del buf[:nxt]
+            continue
+        length = 3 + (((buf[1] & 0x1F) << 8) | buf[2])
+        if len(buf) < length:
+            break
+        frames.append(bytes(buf[:length]))
+        del buf[:length]
+    return frames
+
+
+# --------------------------------------------------------------------------
 # Encoder
 # --------------------------------------------------------------------------
 
@@ -423,7 +575,7 @@ class Encoder:
         self._config: bytes | None = None
         self._stop = threading.Event()
         self._ogg = ogg.OggReader()
-        self._adts = bytearray()
+        self._frames = bytearray()
         self.error: str | None = None
 
         if (self.passthrough is None and self.choice.encoder == "libfdk_aac"
@@ -449,9 +601,7 @@ class Encoder:
             # thing passthrough exists to avoid. The stream keeps its own
             # channel count and sample rate all the way to the far end, where
             # the decoder resamples to the player's rate as it always has.
-            cmd += ["-c:a", "copy", "-f",
-                    "ogg" if self.choice.container == "ogg" else "adts",
-                    "pipe:1"]
+            cmd += ["-c:a", "copy", "-f", self.choice.container, "pipe:1"]
             return cmd
         cmd += ["-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),
                 "-c:a", self.choice.encoder, "-b:a", str(self.bitrate)]
@@ -468,7 +618,12 @@ class Encoder:
             cmd += ["-vbr", "constrained",
                     "-frame_duration", str(OPUS_FRAME_MS), "-f", "ogg"]
         else:
-            cmd += ["-f", "adts"]
+            # adts or latm. Both are self-delimiting, so the split below needs
+            # no help from the container; latm is there because xHE-AAC cannot
+            # be carried in ADTS at all.
+            if self.choice.container == "latm":
+                cmd += ["-latm", "1"]
+            cmd += ["-f", self.choice.container]
         cmd += ["pipe:1"]
         return cmd
 
@@ -531,10 +686,12 @@ class Encoder:
                     continue
                 out.append(pkt)
             return out
-        # split_adts consumes in place and leaves any partial frame behind, so
-        # append to the persistent buffer rather than a temporary.
-        self._adts.extend(chunk)
-        return split_adts(self._adts)
+        # Both splitters consume in place and leave any partial frame behind,
+        # so append to the persistent buffer rather than a temporary.
+        self._frames.extend(chunk)
+        if self.choice.container == "latm":
+            return split_loas(self._frames)
+        return split_adts(self._frames)
 
     @property
     def config(self) -> bytes | None:
@@ -594,7 +751,12 @@ class Decoder:
         self._granule = 0
 
     def _command(self) -> list[str]:
-        fmt = "ogg" if self.codec_id == framing.CODEC_OPUS else "aac"
+        # The demuxer follows the container the transmitter used, which follows
+        # the codec: Opus in Ogg, xHE-AAC in LOAS/LATM, the rest in ADTS. Any
+        # recent ffmpeg decodes all three; xHE-AAC needs 7.1 or later, where
+        # the native AAC decoder gained USAC.
+        fmt = {framing.CODEC_OPUS: "ogg",
+               framing.CODEC_XHE_AAC: "loas"}.get(self.codec_id, "aac")
         return [self.ffmpeg, "-hide_banner", "-loglevel", "error",
                 "-f", fmt, "-i", "pipe:0",
                 "-f", "s16le", "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),

@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.4.0 — xHE-AAC, as far as this toolchain allows
+
+**Added**
+
+- **xHE-AAC (MPEG-D USAC)** has a wire code point, a transport and a decode
+  path, so a source already carrying it can be relayed bit-exact and played at
+  the far end.
+- **LOAS/LATM container**, which xHE-AAC requires — an ADTS header has a
+  two-bit profile field covering the MPEG-2 AAC profiles and no value meaning
+  USAC. LOAS is equally self-delimiting (11-bit syncword `0x2B7`, 13-bit
+  length). Verified end to end through the real encoder and decoder: 191
+  packets, every syncword right, every length exact, 8.1 s in and 8.1 s out,
+  identical fed a byte at a time.
+- **The codec dropdown now asks ffmpeg what it can really encode** — by
+  encoding a twentieth of a second and seeing whether it succeeds — and shows
+  anything it cannot as disabled, with the reason. This also catches an ffmpeg
+  built without `libfdk_aac`, which used to fail at Start.
+
+**It cannot encode xHE-AAC, and no change here can fix that.** The open-source
+Fraunhofer FDK ships a USAC decoder and no USAC encoder, which is why
+`libfdk_aac` is present in this build and still rejects `-profile:a usac`,
+`xhe` and `aac_usac`; ffmpeg's native AAC encoder is LC only, MediaFoundation's
+is too, and nothing in the build advertises USAC. Making one needs exhale,
+Apple's `afconvert`, or a licensed Fraunhofer encoder. Passthrough is the
+useful case regardless: xHE-AAC is strongest at 24–32 kbps, which is the range
+these channels have.
+
+Decoding uses ffmpeg's native USAC support, which needs 7.1 or later. That one
+link is the only part not exercised here, for want of a stream to test with.
+
+No wire format break: the codec field is three bits, ids 5–7 remain.
+
 ## v1.3.1 — a switch for turning energy dispersal off
 
 **Added**

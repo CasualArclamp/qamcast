@@ -671,6 +671,38 @@ stereo near 160 kbps:
 Those switches are otherwise invisible, so the transmit UI draws the ladder
 with the live rung lit. It needs a `--enable-nonfree` ffmpeg with `libfdk_aac`.
 
+**xHE-AAC (MPEG-D USAC)** has a code point, a transport and a decode path, so a
+source that already carries it can be relayed bit-exact and played at the far
+end. It cannot be *encoded* here, and that is not something this code can fix:
+
+- the open-source Fraunhofer FDK ships a USAC decoder and **no USAC encoder**,
+  which is why `libfdk_aac` is present in this build and still rejects
+  `-profile:a usac`, `xhe` and `aac_usac`;
+- ffmpeg's native AAC encoder is LC only, and so is MediaFoundation's;
+- no encoder in this build advertises USAC at all.
+
+Making one needs exhale, Apple's `afconvert`, or a licensed Fraunhofer encoder.
+So the codec dropdown asks *this* ffmpeg what it can really do — by encoding a
+twentieth of a second and seeing whether it succeeds — and shows anything it
+cannot as disabled, with the reason. A listed encoder that fails at Start is a
+control that looks alive and does nothing.
+
+Passthrough is the useful case anyway: xHE-AAC exists to be good at 24–32 kbps,
+which is exactly the range these channels have.
+
+It travels in **LOAS/LATM, not ADTS**, and it has to. An ADTS header carries a
+two-bit profile field covering the three MPEG-2 AAC profiles, and there is no
+value in it that means USAC — the configuration in a LOAS stream travels as a
+StreamMuxConfig instead, which is why broadcast AAC uses it. LOAS is equally
+self-delimiting: an 11-bit syncword `0x2B7` and a 13-bit length, so slicing is
+the same shape as ADTS and needs no codec knowledge.
+
+That transport is verified end to end through the real encoder and decoder —
+191 packets, every syncword right, every length exact, 8.1 s in and 8.1 s out,
+identical when fed a byte at a time. It is exercised with HE-AAC in LOAS
+because that is what this machine can produce; what remains untested here is
+only whether ffmpeg's own USAC decoder works, which needs ffmpeg 7.1 or later.
+
 Codec config and PAD are **retransmitted once a second, not sent once**. A
 receiver joining mid-broadcast has missed anything sent at the start — and so
 has the interleaver's fill region.

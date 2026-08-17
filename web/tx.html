@@ -912,6 +912,17 @@ $('start').onclick = async () => {
     codec: $('codec').value,
     passthrough: $('passthrough').checked,
     bitrate: readBitrate(),
+    // The key the panel is showing *is* the link, and Start builds from it in
+    // preference to the dials. That is not belt and braces, it is the fix for
+    // a real divergence: the panel solves against the selected preset and
+    // takes its pilot spacing, carrier and frame length, while rebuilding from
+    // the dials cannot recover any of the three -- there are no dials for
+    // them. Once the solver moved the symbol rate the page dropped to Custom,
+    // and the transmitter went out on pilot spacing 64 while the key it was
+    // displaying said 128. Copy that key to a receiver and it interpolates
+    // phase between symbols that are payload, not pilots: sync holds at 0.99,
+    // the constellation smears into rings, and nothing ever locks.
+    link_key: /^QC/i.test($('linkKey').value) ? $('linkKey').value : '',
     profile: $('preset').value,
     mode: $('mode').value,
     carriers: +$('carriers').value || 0,

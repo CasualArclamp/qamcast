@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.1.1 — the transmitter now sends what its link key says
+
+**Fixed**
+
+- **The panel and the transmission could describe different links.** The panel
+  solves against the selected preset and takes its pilot spacing, carrier and
+  frame length; Start rebuilt from the dials, which cannot express any of the
+  three. Once the solver moved the symbol rate — enough on its own to drop the
+  page to Custom — the transmitter went out on pilot spacing 64 while the key
+  it was showing said 128.
+- Copying that key to a receiver made it interpolate carrier phase between
+  symbols that were payload rather than pilots: **sync held at 0.99, the
+  constellation smeared into rings, and nothing ever locked.** Measured, the
+  mismatch costs 30 dB of EVM (52.4 → 22.6), which is why it limped on a clean
+  virtual cable and failed on anything real. It affected QAM as well as APSK.
+- Start now builds from the key the panel is displaying, so the two cannot
+  part company.
+
+**Added**
+
+- The receiver names this failure instead of showing a blank panel: a strong
+  correlation peak with nothing decoding means the card rate, symbol rate,
+  roll-off and carrier are already right, and what is left to check is the
+  pilot spacing, the frame length and the mode.
+- `tools/linkkey_roundtrip.py` runs the page's own solve-then-deviate sequence
+  and requires that what the panel shows is what goes on air.
+
 ## v1.1.0 — OFDM: spacing and carrier count are now two dials
 
 **Changed — the carrier count means bandwidth now, not spacing**

@@ -156,6 +156,28 @@ point it is dropped and says so — the dials cannot express a carrier frequency
 or a pilot spacing, so reading the settings back out of them would silently
 discard three of the things the key exists to carry.
 
+**The transmitter builds from its own key too**, rather than from its dials,
+and that is a fix rather than tidiness. The panel solves against the selected
+preset and takes its pilot spacing, carrier and frame length; Start used to
+rebuild from the dials, which cannot express any of the three. So once the
+solver moved the symbol rate — enough on its own to drop the page to Custom —
+the transmitter went out on pilot spacing 64 while the key it was displaying
+said 128. Copy that key across and the receiver interpolates carrier phase
+between symbols that are payload rather than pilots: **sync holds at 0.99, the
+constellation smears into rings, and nothing ever locks.** Measured, the
+mismatch costs 30 dB of EVM — 52.4 dB down to 22.6 — which is why it limped on
+a clean virtual cable and died on anything real. `tools/linkkey_roundtrip.py`
+now runs the page's own solve-then-deviate sequence and requires that what the
+panel shows is what goes on air.
+
+That failure is also the hardest one to read off the receive panel, because
+every number that would explain it is blank — Es/N0, carrier and clock are
+only filled in on a locked frame. So the receiver now names it: a strong
+correlation peak with nothing decoding means the card rate, symbol rate,
+roll-off and carrier are already right (the preamble is built from them and
+would not correlate otherwise), and what is left to check is the pilot
+spacing, the frame length and the mode.
+
 `tools/linkkey_check.py` covers the format — round trip, typos, formatting,
 and that no custom link ever borrows a preset's name. `tools/linkkey_roundtrip.py`
 covers the thing that actually matters: that a key copied across gives the

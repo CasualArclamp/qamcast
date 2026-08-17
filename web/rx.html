@@ -543,7 +543,10 @@ connect(s => {
   }
 
   $('fillBar').style.width = Math.min(100,(s.fill ?? 0)*100)+'%';
-  set('fillNote', s.fill_note || ' ');
+  // The hint wins over the fill note. If nothing is decoding at all, how
+  // full the interleaver is is not the question being asked.
+  set('fillNote', s.hint || s.fill_note || ' ');
+  $('fillNote').className = 'note' + (s.hint ? ' warn' : '');
   set('pstation', s.pad_station || '-');
   set('ptitle', s.pad_title || '-');
   set('partist', s.pad_artist || '-');

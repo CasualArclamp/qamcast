@@ -51,6 +51,26 @@ def check(label: str, page: dict, verbose: bool) -> bool:
               f"{plan.get('mode')!r}")
         return False
 
+    # The key the panel displays must describe the link the transmitter is
+    # actually going to build. Nothing enforced that, and they diverged: the
+    # panel took the pilot spacing, the carrier and the frame length from the
+    # preset it was solving against, while Start rebuilt the profile from the
+    # dials alone -- and the dials cannot express any of the three. A key
+    # copied across then tuned the receiver to pilots the transmitter was not
+    # sending. Sync still ran at 0.99, nothing locked, and the constellation
+    # smeared into rings because the phase interpolated between pilots that
+    # were payload symbols.
+    built = tx.build_profile(page)
+    keyed = linkkey.to_profile(linkkey.decode(key))
+    if not linkkey._same_link(built, keyed):
+        print(f"BAD {label:26s} the panel's key describes a different link "
+              f"from the one Start builds")
+        print(f"      key   pilot {keyed.pilot_spacing} frame "
+              f"{keyed.frame_symbols} carrier {keyed.carrier:.0f}")
+        print(f"      Start pilot {built.pilot_spacing} frame "
+              f"{built.frame_symbols} carrier {built.carrier:.0f}")
+        return False
+
     # exactly what rx.py does with a pasted key, then what Start sends
     read = rx.Receiver().read_link_key({"key": key})
     if read.get("error"):
@@ -119,9 +139,68 @@ def main() -> int:
             ok &= check(f"{label} [{mode}]", page, verbose)
             n += 1
 
+    ok &= deviation(verbose)
+
     print(f"\n{n} links copied across by key")
     print("PASS" if ok else "FAILURES")
     return 0 if ok else 1
+
+
+def deviation(verbose: bool) -> bool:
+    """The page's own two-step: solve against a preset, then Start as Custom.
+
+    This is not a contrived sequence, it is what the transmit page does. The
+    solver is allowed to move the symbol rate, and once it has, the preset name
+    no longer describes the link -- so the page drops to Custom and Start sends
+    Custom. The panel, and the key it is showing, were computed against the
+    preset; the profile Start builds is computed from the dials. The dials
+    cannot express a pilot spacing, a carrier or a frame length, so all three
+    silently reverted to their automatic values while the key kept the
+    preset's.
+
+    Measured, that put the transmitter on pilot spacing 64 and the receiver --
+    following the key -- on 128. The receiver then interpolated carrier phase
+    between symbols that were payload rather than pilots, which rotates the
+    constellation into smeared rings, holds sync at 0.99, and never locks.
+    """
+    print("\n-- the page's solve-then-deviate sequence")
+    good = True
+    for name, p in profiles.PROFILES.items():
+        if p.is_ofdm:
+            continue        # no symbol rate for the solver to move
+        # A bitrate low enough that the solver narrows the symbol rate, which
+        # is what makes the page call deviate().
+        panel = tx.solve({"profile": name, "mode": p.mode, "driver": "bitrate",
+                          "sample_rate": p.sample_rate,
+                          "symbol_rate": p.symbol_rate, "rolloff": p.rolloff,
+                          "bitrate": 16000, "modulation": "QPSK",
+                          "code_rate": "1/2", "locks": []})
+        if panel.get("error"):
+            continue
+        if "symbol_rate" not in panel.get("moved", []):
+            continue        # nothing deviated, so nothing to check here
+        # What the page sends to Start afterwards: Custom, and the dials.
+        start = tx.build_profile({
+            "profile": "CUSTOM", "mode": p.mode,
+            "link_key": panel.get("link_key"),
+            "sample_rate": panel["sample_rate"],
+            "symbol_rate": panel["symbol_rate"], "rolloff": panel["rolloff"]})
+        keyed = linkkey.to_profile(linkkey.decode(panel["link_key"]))
+        same = linkkey._same_link(start, keyed)
+        good &= same
+        if not same or verbose:
+            print(f"{'ok ' if same else 'BAD'} {name} -> "
+                  f"{panel['symbol_rate']} Bd")
+            if not same:
+                print(f"      panel key  pilot {keyed.pilot_spacing} "
+                      f"frame {keyed.frame_symbols} "
+                      f"carrier {keyed.carrier:.0f}")
+                print(f"      on air     pilot {start.pilot_spacing} "
+                      f"frame {start.frame_symbols} "
+                      f"carrier {start.carrier:.0f}")
+    if good:
+        print("   what the panel shows is what goes on air")
+    return good
 
 
 if __name__ == "__main__":

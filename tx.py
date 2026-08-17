@@ -1071,8 +1071,14 @@ def solve(msg: dict) -> dict:
                         f"{int(reachable) // 1000} kbps is the most it will do.")
 
     # Only keep the preset's hand-placed carrier and frame length if the solver
-    # left the symbol rate where the preset put it; if it moved, the page has
-    # deviated to Custom and Start will build the automatic ones.
+    # left the symbol rate where the preset put it; if it moved, the preset no
+    # longer describes the link and the automatic placement is the honest one.
+    #
+    # The pilot spacing does *not* get the same treatment, and that asymmetry
+    # used to be a bug rather than a decision: the plan kept the preset's
+    # spacing while Start, rebuilding from the dials, could not know it. The
+    # key below is now what Start builds from, so the two cannot part company
+    # -- but the rule is worth stating, because it is what the key is carrying.
     if carrier is not None and symbol_rate != int(msg.get("symbol_rate") or 0):
         carrier = None
         if not msg.get("frame_symbols"):
@@ -1085,10 +1091,19 @@ def solve(msg: dict) -> dict:
     # fields on the page. The carrier, the pilot spacing and the frame length
     # are settled here and are every bit as load-bearing as the symbol rate; a
     # key without them names a link that only sometimes exists.
-    out["link_key"] = linkkey.encode(
-        profiles.make_profile(sample_rate, symbol_rate, rolloff,
-                              carrier=carrier, pilot_spacing=pilot,
-                              frame_symbols=frame_symbols, mode=sc_mode))
+    #
+    # This is also what Start builds from, so a key that cannot be made has to
+    # leave the field empty rather than fail the whole solve -- Start then
+    # falls back to the dials, which is the old behaviour and merely imprecise
+    # rather than a blank panel.
+    try:
+        out["link_key"] = linkkey.encode(
+            profiles.make_profile(sample_rate, symbol_rate, rolloff,
+                                  carrier=carrier, pilot_spacing=pilot,
+                                  frame_symbols=frame_symbols, mode=sc_mode))
+    except (linkkey.LinkKeyError, ValueError) as exc:
+        out["link_key"] = ""
+        notes.append(f"No link key for this combination: {exc}")
     out["mode"] = sc_mode
     out["carries"] = bitrate <= ceiling
     out["locks"] = sorted(locks)

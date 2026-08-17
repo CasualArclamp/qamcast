@@ -448,12 +448,42 @@ class Receiver:
             state["fill"] = chain.fill_fraction
             state["fill_note"] = (f"{chain.fill_seconds:.1f} s of diversity delay; "
                                   f"audio starts once filled")
+        state["hint"] = _diagnose(r, live.get("frames", 0),
+                                  live.get("modcod") is not None)
         # Keep the last snapshot where callers that are not a browser can see
         # it -- the CLI and tools/selftest.py both read _state, and when this
         # moved onto a publisher thread they silently started reading the
         # initial "not running" stub instead.
         self._state = state
         return state
+
+
+def _diagnose(result, frames: int, ever_locked: bool) -> str:
+    """Name the failure the receiver cannot otherwise report.
+
+    Finding the preamble and never locking is the hardest state to read off
+    this panel, because every number that would explain it is blank -- Es/N0,
+    carrier and clock are only filled in on a locked frame, so the display of a
+    settings mismatch is a display of nothing at all. Meanwhile the
+    constellation shows something that looks like signal, because it is: the
+    symbols are there and only the phase reference is wrong.
+
+    A strong correlation peak means the preamble matched, which means the card
+    rate, symbol rate, roll-off and carrier are all right -- the preamble is
+    built from them. So what is left to be wrong is what the preamble does not
+    prove: the pilot spacing, the frame length, or the constellation family.
+    Say that, rather than leaving the operator to infer it from a blank panel.
+    """
+    if result is None or result.locked or ever_locked or frames < 4:
+        return ""
+    if (result.corr_peak or 0) < 0.7:
+        return ""
+    return ("Preamble found on every frame but nothing decodes, which is what "
+            "a settings mismatch looks like. The card rate, symbol rate, "
+            "roll-off and carrier must already be right -- the preamble is "
+            "built from them and would not correlate otherwise. Check the "
+            "pilot spacing, the frame length and the mode against the "
+            "transmitter, or paste its link key, which carries all three.")
 
 
 def restart_decoder(old, codec_id: int, config: bytes | None, ffmpeg):

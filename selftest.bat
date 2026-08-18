@@ -97,7 +97,7 @@ echo  build from source; needs cmake and a C++ compiler.
 echo.
 set "BUILD="
 set /p "BUILD=Build it now? Y/n: "
-if /i "%BUILD%"=="n" goto :noexhale
+if /i "!BUILD:~0,1!"=="n" goto :noexhale
 echo.
 python tools\build_exhale.py
 if errorlevel 1 goto :noexhale

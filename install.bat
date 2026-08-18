@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 title QAMcast - install
 
@@ -40,7 +40,7 @@ if errorlevel 1 (
 )
 set "GET="
 set /p "GET=Download QAMcast into this folder? Y/n: "
-if /i "%GET%"=="n" (
+if /i "!GET:~0,1!"=="n" (
     echo  Nothing to do.
     pause
     exit /b 1

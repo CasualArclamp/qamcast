@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.6.1 — the prompts accept what people actually type
+
+**Fixed**
+
+- **A yes/no answer was compared whole**, so `y` worked and `yes` did not.
+  Typing "yes" at *Pass through without re-encoding?* silently transmitted
+  a re-encode; typing "no" at *Download QAMcast into this folder?* went ahead
+  and downloaded it. Every one of them now compares the first character, so
+  y/Y/yes/Yeah and n/N/no all mean what they look like.
+- `install.bat` needed delayed expansion for that and did not have it.
+
 ## v1.6.0 — an installer, and xHE-AAC stays out of the way until asked for
 
 **Added**

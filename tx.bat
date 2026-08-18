@@ -88,7 +88,7 @@ echo.
 set "PASS="
 set /p "PASS=Pass through without re-encoding? y/N: "
 set "PTFLAG="
-if /i "%PASS%"=="y" set "PTFLAG=--passthrough"
+if /i "!PASS:~0,1!"=="y" set "PTFLAG=--passthrough"
 if defined PTFLAG (
     echo.
     echo  Checking what the source actually carries ...
@@ -203,7 +203,7 @@ echo  one-time build, from source, and needs cmake and a C++ compiler.
 echo.
 set "BUILD="
 set /p "BUILD=Build it now? Y/n: "
-if /i "%BUILD%"=="n" goto :noexhale
+if /i "!BUILD:~0,1!"=="n" goto :noexhale
 echo.
 python tools\build_exhale.py
 if errorlevel 1 goto :noexhale

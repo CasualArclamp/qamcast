@@ -376,6 +376,7 @@ class Receiver:
                     "chain": chain, "result": last_result, "modcod": modcod,
                     "codec_id": codec_id, "pad": pad, "frames": frames,
                     "buffered": player.buffered if player.monitors else None,
+                    "filling": player.filling if player.monitors else False,
                     "audio_rate": meter.rate(),
                 }
         except Exception as exc:
@@ -445,6 +446,8 @@ class Receiver:
             "bridged": chain.stats.bridged_frames if chain else 0,
             "chain_resyncs": chain.stats.resyncs if chain else 0,
             "audio_buffer": live.get("buffered"),
+            "audio_filling": bool(live.get("filling")),
+            "audio_target": PREBUFFER_SECONDS,
             "volume": self._volume,
             "paused": self._paused,
             "pad_station": pad.station,
@@ -598,6 +601,9 @@ class Monitoring:
     # no jitter buffer, and reporting its 0.0 as a buffer level makes an
     # empty-sounding fault out of nothing at all.
     monitors = False
+    # Whether the jitter buffer is still filling. Reported so the panel can
+    # say "filling" rather than showing a buffer level that looks like a fault.
+    filling = False
 
     def set_volume(self, value: float) -> None:
         self.volume = min(1.0, max(0.0, float(value)))
@@ -662,8 +668,23 @@ class WavPlayer(Monitoring):
             self._also.close()
 
 
+# How much audio to hold before playing a sound, and to rebuild after running
+# dry. The modem delivers in frame-sized bursts -- one frame is 279 ms at FM44
+# -- and a decoder that has just been handed a config produces nothing at all
+# for a moment, so the arrival rate is lumpy even on a perfect link. Playing
+# the instant the first bytes land means playing from an empty buffer, which
+# is a gap in the audio every time a burst is late.
+#
+# Two seconds is not a compromise between latency and safety here: the
+# interleaver already puts 6 to 24 seconds in front of this, so two more
+# change nothing anyone can hear, and they are enough to cover a late frame,
+# a decoder restart and a MODCOD change together. It is fixed rather than a
+# dial because there is no setting of it that anyone would want to choose.
+PREBUFFER_SECONDS = 2.0
+
+
 class DevicePlayer(Monitoring):
-    """Plays decoded PCM, with a small jitter buffer.
+    """Plays decoded PCM, behind a two-second jitter buffer.
 
     The modem delivers audio in frame-sized bursts, not smoothly, so writing
     straight to the device would underrun constantly.
@@ -676,12 +697,25 @@ class DevicePlayer(Monitoring):
         self._buf = bytearray()
         self._lock = threading.Lock()
         self._rate = rate
+        self._target = int(PREBUFFER_SECONDS * rate) * 4
+        # Starts filling, and goes back to filling whenever it runs dry.
+        # Refilling after an underrun is the difference between one gap and a
+        # run of them: without it the buffer sits at empty and every burst that
+        # arrives late is audible again.
+        self._filling = True
 
         def callback(outdata, frames, _time, _status):
             need = frames * 2 * 2
             with self._lock:
+                if self._filling:
+                    if len(self._buf) < self._target:
+                        outdata[:] = 0          # still filling; silence
+                        return
+                    self._filling = False
                 take = self._buf[:need]
                 del self._buf[:need]
+                if not self._buf:
+                    self._filling = True        # ran dry; rebuild the cushion
                 gain, paused = self.volume, self.paused
             if len(take) < need:
                 take = bytes(take) + bytes(need - len(take))
@@ -710,6 +744,11 @@ class DevicePlayer(Monitoring):
     def buffered(self) -> float:
         with self._lock:
             return len(self._buf) / 4 / self._rate
+
+    @property
+    def filling(self) -> bool:
+        with self._lock:
+            return self._filling
 
     def close(self) -> None:
         try:

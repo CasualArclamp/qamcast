@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.6.2 — a two-second cushion under the audio
+
+**Fixed**
+
+- **The player started on the first bytes that arrived**, which meant playing
+  from an empty buffer: the modem delivers in frame-sized bursts — one frame
+  is 279 ms at `FM44` — so any late burst was a gap you could hear. It now
+  holds **two seconds** before making a sound, and rebuilds that cushion
+  whenever it runs dry, so one late frame costs one refill rather than a run
+  of clicks.
+- Not a setting. The interleaver already puts 6–24 seconds in front of it, so
+  two more change nothing anyone can hear, and there is no value of it anybody
+  would want to pick.
+- The panel says **filling** while it is, rather than showing a level that
+  looks like a fault. Once playing, the level is graded against the target
+  instead of against 0.3 s.
+
 ## v1.6.1 — the prompts accept what people actually type
 
 **Fixed**

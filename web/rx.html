@@ -587,7 +587,12 @@ connect(s => {
   set('bridged', s.bridged != null
       ? s.bridged + (s.chain_resyncs ? ` (+${s.chain_resyncs} realign)` : '')
       : '-');
-  set('audiobuf', s.audio_buffer != null ? s.audio_buffer.toFixed(1)+' s' : '-');
+  // While the buffer is filling, say so. A level of 0.4 s means one thing on
+  // the way up to the two-second cushion and quite another once playing, and
+  // showing the same number for both is what makes a normal start look broken.
+  set('audiobuf', s.audio_buffer == null ? '-'
+      : s.audio_filling ? 'filling ' + s.audio_buffer.toFixed(1) + ' s'
+      : s.audio_buffer.toFixed(1) + ' s');
 
   // How healthy each reading is. Nothing is graded until there is a lock,
   // because a number measured off noise is not a bad reading, it is no
@@ -608,7 +613,11 @@ connect(s => {
     grade('ppm', low(s.ppm, 20, 100));           // sound cards are ~±100 ppm
     // Null when nothing is being played, in which case there is no buffer to
     // report and `high` leaves it ungraded.
-    grade('audiobuf', high(s.audio_buffer, 0.3, 0.1));   // below 0.1 s it clicks
+    // Filling is neither good nor bad, it is the normal first two seconds.
+    // Once playing, the cushion should sit near its target; well under it
+    // means the link is not keeping up and the audio is about to gap.
+    grade('audiobuf', s.audio_filling ? '' :
+          high(s.audio_buffer, (s.audio_target || 2) * 0.5, (s.audio_target || 2) * 0.2));
   } else {
     ['evm', 'corr', 'freq', 'ppm', 'audiobuf'].forEach(id => grade(id, ''));
   }

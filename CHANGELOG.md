@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.8.1 — pick a side of the cable
+
+**Added**
+
+- **`--channel mono | left | right`** on both apps, and a dropdown beside the
+  device on both pages. It picks which side of a stereo card carries the
+  signal.
+- A side puts **silence** in the other, not a copy, so the far channel is
+  genuinely free: one cable can carry the modem on one side and an analogue
+  feed, a second link, or nothing on the other. Measured transmitting on the
+  right — left RMS **0.0**, and a receiver told to listen on the left decoded
+  **0 frames** against 100 on the right.
+- The receiver has the same setting for the same reason: a transmitter using
+  one side is no use if nothing can be told to go and find it.
+- `mono` is the default and opens a single channel, which is what both apps
+  always did — nothing changes for anyone not asking for a side.
+
 ## v1.8.0 — coded bits are interleaved before mapping
 
 **Wire format**

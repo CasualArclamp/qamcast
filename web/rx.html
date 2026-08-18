@@ -179,6 +179,12 @@
     <h2>Input</h2>
     <label>Capture device</label>
     <select id="device"></select>
+    <label>Channel</label>
+    <select id="channel">
+      <option value="mono">mono &mdash; one channel, as a mono input offers anyway</option>
+      <option value="left">left only &mdash; ignore the right</option>
+      <option value="right">right only &mdash; ignore the left</option>
+    </select>
     <label>Audio output</label>
     <select id="outdev"></select>
     <label style="display:inline"><input type="checkbox" id="allApis" style="width:auto"> show every host API</label>
@@ -659,6 +665,7 @@ $('start').onclick = async () => {
     symbol_rate: +$('symbolRate').value,
     rolloff: +$('rolloff').value,
     device: $('device').value,
+    channel: $('channel').value,
     outdev: $('outdev').value});
   if (r.error) set('error', r.error);
 };

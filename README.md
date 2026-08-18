@@ -74,6 +74,14 @@ python rx.py --no-ui --profile WIDE --device 12 --output 6 --record out.wav
 reads it back with `--input tx.wav` — a complete loopback with no hardware.
 `python tx.py --list-devices` enumerates.
 
+**`--channel mono | left | right`** picks which side of a stereo card carries
+the signal, on both apps. A side puts *silence* in the other rather than a
+copy, so the far channel is genuinely free — one cable can take the modem on
+one side and an analogue feed, a second link, or nothing on the other. Measured
+transmitting on the right: left RMS 0.0, and a receiver told to listen left
+decodes nothing at all. `mono` opens a single channel and lets the driver place
+it, which is what both apps always did.
+
 ```bash
 python tools/selftest.py
 ```

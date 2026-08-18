@@ -184,7 +184,8 @@ class Transmitter:
         self._thread = threading.Thread(
             target=self._run,
             args=(source, cfg.get("codec", "opus"), bitrate, profile, modcod,
-                  cfg.get("device", ""), passthrough, depth),
+                  cfg.get("device", ""), passthrough, depth,
+                  cfg.get("channel", "mono")),
             daemon=True)
         self._thread.start()
         return {"ok": True,
@@ -412,14 +413,15 @@ class Transmitter:
     # -- worker ----------------------------------------------------------
 
     def _run(self, source, codec_name, bitrate, profile, modcod, device,
-             passthrough=None, depth=None) -> None:
+             passthrough=None, depth=None, channel="mono") -> None:
         enc = sink = None
         try:
             enc = self._enc = codec.Encoder(source, codec_name, bitrate,
                                 ffmpeg=self.ffmpeg, loop=True,
                                 passthrough=passthrough)
             enc.start()
-            sink = self._sink = open_output(device, profile.sample_rate)
+            sink = self._sink = open_output(device, profile.sample_rate,
+                                            channel)
 
             tx = transport.TransmitChain(profile, modcod, depth)
             # One line decides the physical layer. Everything after it --
@@ -1275,11 +1277,20 @@ def solve(msg: dict) -> dict:
 # Audio output
 # --------------------------------------------------------------------------
 
+# Which side of a stereo output the modulated signal goes to. "mono" opens a
+# one-channel stream and lets the driver place it, which is what this always
+# did; left and right open two and put silence in the other, so the modem can
+# have one side of a cable while something else has the other -- an analogue
+# feed, a second link, or nothing at all where a transmitter only takes one.
+CHANNELS = ("mono", "left", "right")
+
+
 class WavSink:
-    def __init__(self, path: str, rate: int):
+    def __init__(self, path: str, rate: int, channel: str = "mono"):
         self.path = path
+        self.channel = channel if channel in CHANNELS else "mono"
         self._w = wave.open(path, "wb")
-        self._w.setnchannels(1)
+        self._w.setnchannels(1 if self.channel == "mono" else 2)
         self._w.setsampwidth(2)
         self._w.setframerate(rate)
         self._t = time.time()
@@ -1287,7 +1298,7 @@ class WavSink:
         self._written = 0
 
     def write(self, x: np.ndarray) -> None:
-        self._w.writeframes(modulator.to_int16(x).tobytes())
+        self._w.writeframes(modulator.to_int16(_place(x, self.channel)).tobytes())
         self._written += len(x)
         # Pace to real time so the UI and the encoder behave as they would on
         # a sound card rather than sprinting through the file.
@@ -1301,16 +1312,18 @@ class WavSink:
 
 
 class DeviceSink:
-    def __init__(self, index: int | None, rate: int):
+    def __init__(self, index: int | None, rate: int, channel: str = "mono"):
         import sounddevice as sd
         self._sd = sd
-        self.stream = sd.OutputStream(samplerate=rate, channels=1,
-                                      dtype="float32", device=index,
-                                      blocksize=0, latency="high")
+        self.channel = channel if channel in CHANNELS else "mono"
+        self.stream = sd.OutputStream(
+            samplerate=rate, channels=1 if self.channel == "mono" else 2,
+            dtype="float32", device=index, blocksize=0, latency="high")
         self.stream.start()
 
     def write(self, x: np.ndarray) -> None:
-        self.stream.write(np.clip(x, -1.0, 1.0).astype(np.float32))
+        self.stream.write(
+            _place(np.clip(x, -1.0, 1.0), self.channel).astype(np.float32))
 
     def close(self) -> None:
         try:
@@ -1320,10 +1333,24 @@ class DeviceSink:
             pass
 
 
-def open_output(device: str, rate: int):
+def _place(x: np.ndarray, channel: str) -> np.ndarray:
+    """One channel of samples, laid into whichever side was asked for.
+
+    Silence in the other side rather than a copy: the point of choosing a side
+    is that the other one is free for something else, and a duplicate would
+    make that impossible while looking like it worked.
+    """
+    if channel == "mono":
+        return x
+    out = np.zeros((len(x), 2), dtype=x.dtype)
+    out[:, 1 if channel == "right" else 0] = x
+    return out
+
+
+def open_output(device: str, rate: int, channel: str = "mono"):
     if not device or device == "wav":
-        return WavSink("tx.wav", rate)
-    return DeviceSink(int(device), rate)
+        return WavSink("tx.wav", rate, channel)
+    return DeviceSink(int(device), rate, channel)
 
 
 # Windows enumerates every card once per host API, so an unfiltered list is
@@ -1448,6 +1475,9 @@ def main() -> int:
                     help=f"stations found in {streams.DEFAULT_DIR}")
     ap.add_argument("--station-dir", default=None,
                     help="folder of .pls/.m3u playlists to read")
+    ap.add_argument("--channel", default="mono",
+                    choices=("mono", "left", "right"),
+                    help="which side of a stereo output to transmit on; mono opens a single channel and lets the driver place it")
     ap.add_argument("--device", default="", help="output device index, or 'wav'")
     ap.add_argument("--station", default="QAM RADIO")
     ap.add_argument("--port", type=int, default=8731)
@@ -1539,6 +1569,7 @@ def main() -> int:
         res = tx.start({**spec, "source": a.source, "codec": a.codec,
                         "passthrough": a.passthrough,
                         "bitrate": bitrate, "device": a.device,
+                        "channel": a.channel,
                         "station": a.station})
         if res.get("error"):
             print(res["error"], file=sys.stderr)

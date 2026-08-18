@@ -121,6 +121,16 @@
 
     <label>Output device</label>
     <select id="device"></select>
+    <label>Channel</label>
+    <select id="channel">
+      <option value="mono">mono &mdash; one channel, the driver places it</option>
+      <option value="left">left only &mdash; right side left free</option>
+      <option value="right">right only &mdash; left side left free</option>
+    </select>
+    <div class="note why">Which side of a stereo output the signal goes to.
+      Picking a side puts silence in the other rather than a copy, so the far
+      channel is genuinely free for something else &mdash; and the receiver has
+      the same setting, so it can go and find it.</div>
     <label style="display:inline"><input type="checkbox" id="allApis" style="width:auto"> show every host API</label>
   </div>
 
@@ -1085,6 +1095,7 @@ $('start').onclick = async () => {
     modulation: $('modulation').value,
     code_rate: $('codeRate').value,
     device: $('device').value,
+    channel: $('channel').value,
     station: $('padStation').value,
     auto_metadata: $('autoMeta').checked,
     swap_artist: $('swapArtist').checked,

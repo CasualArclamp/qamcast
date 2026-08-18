@@ -166,7 +166,7 @@ class Receiver:
         self._thread = threading.Thread(
             target=self._run,
             args=(profile, cfg.get("device", ""), cfg.get("outdev", ""),
-                  cfg.get("record") or None),
+                  cfg.get("record") or None, cfg.get("channel", "mono")),
             daemon=True)
         self._thread.start()
         return {"ok": True}
@@ -269,10 +269,11 @@ class Receiver:
 
     # -- worker ----------------------------------------------------------
 
-    def _run(self, profile, device, outdev, record=None) -> None:
+    def _run(self, profile, device, outdev, record=None,
+             channel="mono") -> None:
         src = player = dec = None
         try:
-            src = self._src = open_input(device, profile.sample_rate)
+            src = self._src = open_input(device, profile.sample_rate, channel)
             dem = (ofdm.CodedDemodulator(profile) if profile.is_ofdm
                    else demodulator.Demodulator(profile))
             player = open_player(outdev, codec.SAMPLE_RATE, record)
@@ -544,10 +545,18 @@ def restart_decoder(old, codec_id: int, config: bytes | None, ffmpeg):
 # Audio in and out
 # --------------------------------------------------------------------------
 
+# Which side of a stereo input to listen to. The transmitter can put the
+# signal on one side and leave the other free, so the receiver has to be able
+# to go and get it; "mono" opens a single channel, which is what this always
+# did and what a mono capture device offers anyway.
+CHANNELS = ("mono", "left", "right")
+
+
 class WavSource:
     """Reads a captured file, paced to real time so the UI behaves normally."""
 
-    def __init__(self, path: str, rate: int):
+    def __init__(self, path: str, rate: int, channel: str = "mono"):
+        self.channel = channel if channel in CHANNELS else "mono"
         self._w = wave.open(path, "rb")
         if self._w.getframerate() != rate:
             raise ValueError(
@@ -564,7 +573,8 @@ class WavSource:
             return None
         x = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32768.0
         if self._ch > 1:
-            x = x[::self._ch]
+            first = 1 if (self.channel == "right" and self._ch > 1) else 0
+            x = x[first::self._ch]
         self._read += len(x)
         delay = self._t + self._read / self._rate - time.time()
         if delay > 0:
@@ -576,16 +586,19 @@ class WavSource:
 
 
 class DeviceSource:
-    def __init__(self, index: int | None, rate: int):
+    def __init__(self, index: int | None, rate: int, channel: str = "mono"):
         import sounddevice as sd
-        self.stream = sd.InputStream(samplerate=rate, channels=1,
-                                     dtype="float32", device=index,
-                                     blocksize=0, latency="high")
+        self.channel = channel if channel in CHANNELS else "mono"
+        self._col = 1 if self.channel == "right" else 0
+        self.stream = sd.InputStream(
+            samplerate=rate, channels=1 if self.channel == "mono" else 2,
+            dtype="float32", device=index, blocksize=0, latency="high")
         self.stream.start()
 
     def read(self, n: int):
         data, _overflow = self.stream.read(n)
-        return data[:, 0].astype(np.float64)
+        col = self._col if data.shape[1] > self._col else 0
+        return data[:, col].astype(np.float64)
 
     def close(self) -> None:
         try:
@@ -766,10 +779,10 @@ class DevicePlayer(Monitoring):
             pass
 
 
-def open_input(device: str, rate: int):
+def open_input(device: str, rate: int, channel: str = "mono"):
     if not device or device == "wav":
-        return WavSource("tx.wav", rate)
-    return DeviceSource(int(device), rate)
+        return WavSource("tx.wav", rate, channel)
+    return DeviceSource(int(device), rate, channel)
 
 
 def open_player(device: str, rate: int, record: str | None = None):
@@ -849,6 +862,9 @@ def main() -> int:
     ap.add_argument("--link-key", default=None,
                     help="the transmitter's key, which sets every field above "
                          "at once and overrides them")
+    ap.add_argument("--channel", default="mono",
+                    choices=("mono", "left", "right"),
+                    help="which side of a stereo input to listen to; mono opens a single channel, as a mono capture device offers anyway")
     ap.add_argument("--device", default="", help="input device index, or 'wav'")
     ap.add_argument("--output", default="", help="output device index, or 'none'")
     ap.add_argument("--input", dest="infile", default=None, help="decode a wav file")
@@ -888,6 +904,7 @@ def main() -> int:
     if a.profile or a.link_key:
         device = "wav" if a.infile else a.device
         res = rx.start({"profile": a.profile, "device": device,
+                        "channel": a.channel,
                         "outdev": a.output, "record": a.record,
                         "link_key": a.link_key,
                         "sample_rate": a.sample_rate, "symbol_rate": a.symbol_rate,

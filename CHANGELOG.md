@@ -1,5 +1,70 @@
 # Changelog
 
+## v1.5.0 — xHE-AAC encodes
+
+**Added**
+
+- **xHE-AAC can be transmitted, not only relayed.** Nothing in ffmpeg encodes
+  it and nothing linkable into it does either, so it uses something else:
+  [exhale](https://gitlab.com/ecodis/exhale), a small open-source USAC encoder.
+  `python tools/build_exhale.py` fetches its source at a pinned revision,
+  patches it, builds it and installs it to `bin/`. No pre-built binary is
+  downloaded and none is committed.
+- The chain is `ffmpeg → WAVE → exhale → access units`. Rungs are exhale's
+  presets, chosen by bitrate as the HE-AAC ladder is: **36 kbps stereo up to
+  108, in twelves**. Below 36 the panel says so instead of failing at Start.
+- `tools/xhecheck.py`, which runs all of the below.
+
+**Measured**, through the real encoder and decoder:
+
+| | |
+|---|---|
+| every rung, 36k to 108k | 282 access units of 282, decoded 12.03 s of 12.03 |
+| round trip vs. the source | correlation 0.9996 at 36k, 0.9999 at 108k |
+| passthrough of an xHE-AAC file | 282 units relayed, **bit-exact** |
+| container transparency | our fragments decode **byte-identically** to exhale's own MP4 |
+| joining mid-broadcast | audio within 341 ms, worst of 24 starting points |
+
+**Changed — how xHE-AAC travels, and it had to change**
+
+v1.4.0 put it in LOAS/LATM. That cannot work, and the measurements say so
+plainly: ffmpeg's LATM muxer refuses outright — *"Muxing MPEG-4 AOT 42 in LATM
+is not supported"* — and its `aac_latm` decoder cannot parse a USAC config
+either, tested by handing it one ffmpeg itself reads happily out of an MP4,
+rebuilt at all nine plausible bit lengths and rejected at every one. So v1.4.0's
+passthrough produced nothing; there was no working xHE-AAC to be compatible
+with.
+
+- **The packets now travel bare and the configuration travels beside them**,
+  the same arrangement Opus has always used.
+- The receiver rebuilds them into a **fragmented MP4** and pipes that to
+  ffmpeg, which is the only streamable container it will decode USAC from.
+  `qamcore/fmp4.py` writes it and reads it.
+- No wire format break: the frame layout and signalling are untouched, and
+  codec ids 5-7 still remain.
+
+**Also**
+
+- The codec config is sent the moment the encoder produces one, rather than
+  waiting up to a second for the next repeat. Opus gains this too.
+- exhale's own experimental pipe output declares a frame length three bytes
+  longer than the frame is — it counts the syncword and length field, which
+  ISO/IEC 14496-3 excludes. Uncorrected, every reader loses sync after the
+  first frame: ffmpeg's LOAS demuxer recovers 17 frames of 235. The build
+  script fixes it, after which 469 frames of a twenty-second stream come out
+  as 469 with no bytes left over.
+- exhale levels to −23 LUFS whenever it writes to a pipe, so transmitted
+  loudness is normalised. Passthrough is untouched. Worth knowing before
+  wondering where the gain went.
+- The independent-frame interval is 10 rather than exhale's suggested 2.5
+  seconds' worth. It sets both join latency and recovery from loss, and across
+  the whole range it costs almost nothing: 427 ms and 52.8 kbps at 10 against
+  2475 ms and 50.8 kbps at 58.
+
+**Note.** exhale is constant *quality*, not constant bitrate — there is no rate
+control to ask. On easy material it runs well under its rung; on demanding
+material it can run over. Leave headroom, or use Opus, which honours the number.
+
 ## v1.4.0 — xHE-AAC, as far as this toolchain allows
 
 **Added**

@@ -14,3 +14,9 @@ selftest_tone.wav
 .vscode/
 .idea/
 Thumbs.db
+
+# exhale, built by tools/build_exhale.py. The source is fetched and compiled
+# locally rather than committed -- see that script for why, and for the two
+# changes it makes to the upstream tree.
+bin/
+build/

@@ -26,8 +26,9 @@ import wave
 
 import numpy as np
 
-from qamcore import (channel as CH, codec, framing, icy, linkkey, modulator,
-                     ofdm, profiles, scope, streams, transport, webui)
+from qamcore import (channel as CH, codec, exhale as exhale_mod, framing, icy,
+                     linkkey, modulator, ofdm, profiles, scope, streams,
+                     transport, webui)
 
 # Config and PAD are retransmitted this often. They cannot be sent once: a
 # receiver joining mid-broadcast has missed anything at the start, and so has
@@ -434,6 +435,7 @@ class Transmitter:
             frames = 0
             started = time.time()
             last_repeat = 0.0
+            sent_config: bytes | None = None
             pending: list[bytes] = []
             spare = cap.net_bitrate - bitrate
 
@@ -473,6 +475,13 @@ class Transmitter:
                     last_drop = time.time()
 
                 now = time.time()
+                # The config is not known until the encoder has produced
+                # something, so send it the moment it appears rather than
+                # waiting for the next repeat -- that is a second of silence
+                # at the far end for every codec that needs one.
+                if enc.config is not None and enc.config != sent_config:
+                    sent_config = enc.config
+                    tx.push_config(sent_config)
                 if now - last_repeat >= REPEAT_SECONDS:
                     last_repeat = now
                     if enc.config:
@@ -1229,12 +1238,21 @@ def solve(msg: dict) -> dict:
     # v2 -> v1 -> LC as the rate rises and the switches are invisible
     # otherwise: nothing on the page changes when you cross 48k, yet a
     # different encoder profile goes out.
+    codec_name = str(msg.get("codec") or "opus")
     try:
-        out["codec_ladder"] = codec.ladder(str(msg.get("codec") or "opus"),
-                                           bitrate)
+        out["codec_ladder"] = codec.ladder(codec_name, bitrate)
     except codec.CodecError as exc:
         out["codec_ladder"] = []
         notes.append(str(exc))
+    # A link too slow for the lowest xHE-AAC rung has no rung lit and nothing
+    # to say for itself, and would then fail at Start. Say it here instead,
+    # while the dial that would fix it is still under the operator's hand.
+    if (codec_name.lower() in codec.XHE_ALIASES
+            and not any(r["active"] for r in out["codec_ladder"])):
+        notes.append(
+            f"{bitrate/1000:.0f} kbps is below the lowest xHE-AAC rung "
+            f"({exhale_mod.MIN_BITRATE//1000} kbps stereo). Use Opus, which "
+            f"spans the whole range, or a faster MODCOD.")
     out["conflict"] = conflict
     # Only worth saying about a bitrate that is actually going to be used --
     # repeating the number in a second sentence right after saying it does not

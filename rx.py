@@ -355,9 +355,10 @@ class Receiver:
                             if got:
                                 pad = got
                         elif ptype == transport.PKT_AUDIO:
-                            if dec is None and r.header.codec != framing.CODEC_OPUS:
+                            if dec is None and not codec.needs_config(r.header.codec):
                                 # AAC needs no out-of-band config: its ADTS
-                                # headers already describe the stream.
+                                # headers already describe the stream. Opus and
+                                # xHE-AAC do, and wait here for it to arrive.
                                 dec = self._dec = restart_decoder(None, r.header.codec, None,
                                                       self.ffmpeg)
                             if dec is not None:

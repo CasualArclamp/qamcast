@@ -49,10 +49,12 @@ CODEC_OPUS = 0
 CODEC_HE_AAC_V2 = 1
 CODEC_HE_AAC_V1 = 2
 CODEC_AAC_LC = 3
-# MPEG-D USAC. Carried in LOAS/LATM rather than ADTS -- see split_loas in
-# codec.py: the ADTS header's two-bit profile field covers the MPEG-2 AAC
-# profiles and has no value meaning USAC, so ADTS cannot describe this stream
-# at all. The field is three bits wide, so 5, 6 and 7 remain.
+# MPEG-D USAC. Its packets travel bare, with the configuration sent out of
+# band as Opus's is -- no self-delimiting AAC transport can carry it. The ADTS
+# header's two-bit profile field covers the MPEG-2 AAC profiles and has no
+# value meaning USAC; LOAS could describe it but ffmpeg will not decode USAC
+# from LOAS, which is measured in fmp4.py. The field is three bits wide, so
+# 5, 6 and 7 remain.
 CODEC_XHE_AAC = 4
 CODEC_NAMES = {
     CODEC_OPUS: "Opus",

@@ -1,4 +1,4 @@
-"""Audio coding: Opus and HE-AAC, driven through ffmpeg.
+"""Audio coding: Opus, HE-AAC and xHE-AAC.
 
 Opus is the default and the recommendation. It spans 16-192 kbps in one codec
 with no profile ladder, is royalty-free, and has packet-loss concealment built
@@ -14,12 +14,20 @@ is also what the codecs actually want -- Parametric Stereo earns its keep at
 signalled in the frame header and carried in-band as a config packet, so the
 receiver reconfigures itself and you never have to tell it.
 
+xHE-AAC is the third, and the only one ffmpeg cannot encode -- see exhale.py,
+which drives an encoder that can. It exists here because it is the strongest
+thing there is at the bottom of the rate range these channels have.
+
 Packet framing differs by codec and is handled in one place:
 
-    AAC   ADTS frames are self-delimiting, so the stream is sliced by reading
-          its own headers.
-    Opus  has no framing of its own; ffmpeg emits and accepts it only inside
-          a container, so ogg.py unwraps and rewraps it.
+    AAC     ADTS frames are self-delimiting, so the stream is sliced by
+            reading its own headers.
+    Opus    has no framing of its own; ffmpeg emits and accepts it only inside
+            a container, so ogg.py unwraps and rewraps it.
+    xHE-AAC likewise, and the container has to be a fragmented MP4 -- ffmpeg
+            will not decode USAC out of anything else that streams. fmp4.py
+            unwraps and rewraps it; what travels on air is the bare access
+            units, with the configuration sent out of band as for Opus.
 """
 
 from __future__ import annotations
@@ -33,7 +41,8 @@ import subprocess
 import threading
 from dataclasses import dataclass
 
-from . import framing, ogg
+from . import exhale as exhale_enc
+from . import fmp4, framing, ogg
 
 # Where to look for an ffmpeg that has libfdk_aac. The bundled Windows builds
 # and anything on PATH will decode everything here, but only a --enable-nonfree
@@ -83,11 +92,11 @@ def can_encode(ffmpeg: str, encoder: str, profile: str | None,
                container: str) -> bool:
     """Whether this ffmpeg will really encode that profile, asked by trying it.
 
-    Listing the encoder is not enough. libfdk_aac is present in this build and
-    still refuses `-profile:a usac`, because the open-source FDK ships a USAC
-    decoder and no USAC encoder -- the capability is a property of the library
-    that was linked, not of the name in the encoder list. The only answer that
-    can be trusted is what happens when you ask it to encode something.
+    Listing the encoder is not enough: the capability is a property of the
+    library that was linked, not of the name in the encoder list. libfdk_aac
+    is present in this build and still refuses `-profile:a usac`, because the
+    open-source FDK ships a USAC decoder and no USAC encoder. The only answer
+    that can be trusted is what happens when you ask it to encode something.
 
     A twentieth of a second of tone, discarded. Cached, so the cost is paid
     once per process for each combination the UI wants to offer.
@@ -97,8 +106,6 @@ def can_encode(ffmpeg: str, encoder: str, profile: str | None,
            "-c:a", encoder, "-b:a", "32k"]
     if profile:
         cmd += ["-profile:a", profile]
-    if container == "latm":
-        cmd += ["-latm", "1"]
     cmd += ["-f", container, "pipe:1"]
     try:
         done = subprocess.run(cmd, capture_output=True, timeout=30)
@@ -139,12 +146,23 @@ def features(codec_id: int) -> dict:
     return {"sbr": sbr, "ps": ps}
 
 
+def needs_config(codec_id: int) -> bool:
+    """Whether a decoder for this codec has to be handed a config packet.
+
+    AAC does not: its ADTS headers describe the stream. Opus and xHE-AAC do,
+    and for the same reason -- the bytes on air are bare packets, and what
+    they mean is in a configuration that travels separately. A receiver that
+    joins mid-broadcast waits for the next repeat of it.
+    """
+    return codec_id in (framing.CODEC_OPUS, framing.CODEC_XHE_AAC)
+
+
 @dataclass(frozen=True)
 class CodecChoice:
     codec_id: int          # framing.CODEC_*
-    encoder: str           # ffmpeg encoder name
+    encoder: str           # ffmpeg encoder name, or "exhale"
     profile: str | None    # libfdk_aac -profile:a value
-    container: str         # "ogg", "adts" or "latm"
+    container: str         # "ogg", "adts" or "fmp4"
 
     @property
     def name(self) -> str:
@@ -182,20 +200,12 @@ AAC_LADDER: tuple[tuple[int | None, "CodecChoice", str], ...] = (
 
 OPUS_CHOICE = CodecChoice(framing.CODEC_OPUS, "libopus", None, "ogg")
 
-# xHE-AAC. Present as a code point, a container and a decode path, so a source
-# that already carries it can be relayed bit-exact and played at the far end.
-#
-# **Nothing here encodes it**, and that is not an omission this code can fix.
-# The open-source FDK ships a USAC decoder and no USAC encoder, ffmpeg's native
-# AAC encoder is LC only, and MediaFoundation's is too -- checked against this
-# build, where `-profile:a usac`, `xhe` and `aac_usac` are all rejected by
-# libfdk_aac and no encoder advertises USAC at all. Producing it needs exhale,
-# Apple's afconvert, or a licensed Fraunhofer encoder. If one appears on this
-# machine, encoder_profiles() below will find it and the ladder will offer it;
-# until then the honest interface is passthrough, which is the useful case
-# anyway: xHE-AAC exists to be good at 24-32 kbps, which is exactly the range
-# these channels have.
-XHE_CHOICE = CodecChoice(framing.CODEC_XHE_AAC, "libfdk_aac", "usac", "latm")
+# xHE-AAC, encoded by exhale rather than by ffmpeg, because nothing in ffmpeg
+# can: the open-source FDK ships a USAC decoder and no USAC encoder, ffmpeg's
+# native AAC encoder is LC only, and MediaFoundation's is too. The encoder name
+# here is not an ffmpeg one and the container is not an ffmpeg muxer -- see
+# exhale.py for the first and fmp4.py for the second.
+XHE_CHOICE = CodecChoice(framing.CODEC_XHE_AAC, "exhale", None, "fmp4")
 
 # Every code point the frame header can name, keyed by that code point. Used
 # by passthrough, which starts from what the source *is* rather than from what
@@ -237,29 +247,28 @@ UI_CODECS = (
     ("aac", "HE-AAC", AAC_LADDER[-1][1],
      "steps v2 to v1 to LC as rate rises"),
     ("xhe", "xHE-AAC", XHE_CHOICE,
-     "MPEG-D USAC, strongest at 24-32k"),
-)
-
-# Why xHE-AAC is usually unavailable, in the terms someone can act on.
-XHE_NO_ENCODER = (
-    "no xHE-AAC encoder in this ffmpeg. The open-source Fraunhofer FDK "
-    "ships a USAC decoder and no USAC encoder, and neither ffmpeg's native "
-    "AAC encoder nor MediaFoundation's does it either. Receiving and "
-    "passing through an xHE-AAC stream both work; only making one does not."
+     "MPEG-D USAC, strongest where bits are scarcest"),
 )
 
 
 def codec_options(ffmpeg: str) -> list[dict]:
-    """The codec dropdown, with what this build can really encode."""
+    """The codec dropdown, with what this machine can really encode.
+
+    Asked rather than assumed, and for xHE-AAC asked of a different program
+    entirely. A control that is offered and then fails at Start is worse than
+    one that is greyed out with the reason on it.
+    """
     out = []
     for value, label, choice, why in UI_CODECS:
-        ok = can_encode(ffmpeg, choice.encoder, choice.profile,
-                        choice.container)
+        if choice.encoder == "exhale":
+            ok, reason = exhale_enc.usable()
+        else:
+            ok = can_encode(ffmpeg, choice.encoder, choice.profile,
+                            choice.container)
+            reason = "" if ok else f"{os.path.basename(ffmpeg)} cannot encode {label}."
         out.append({
             "value": value, "label": label, "why": why, "encode": ok,
-            "unavailable": "" if ok else (
-                XHE_NO_ENCODER if value == "xhe" else
-                f"{os.path.basename(ffmpeg)} cannot encode {label}."),
+            "unavailable": "" if ok else reason,
         })
     return out
 
@@ -404,11 +413,12 @@ def passthrough_choice(info: dict) -> dict:
         out = {"ok": True, "codec_id": cid,
                "reason": "ADTS frames copy straight into frames."}
         if cid == framing.CODEC_XHE_AAC:
-            # LOAS rather than ADTS, and the reason is worth saying: an ADTS
-            # header cannot describe a USAC stream, so a source carrying one is
-            # already in LOAS or MP4 and ffmpeg remuxes it to LOAS untouched.
-            out["reason"] = ("xHE-AAC copies straight into frames, in "
-                             "LOAS/LATM -- ADTS cannot describe it.")
+            # Bare access units rather than ADTS frames, and the reason is
+            # worth saying: no self-delimiting AAC transport can describe a
+            # USAC stream, so the packets travel bare and the configuration
+            # travels beside them, exactly as Opus does.
+            out["reason"] = ("xHE-AAC copies straight into frames, as bare "
+                             "access units -- ADTS cannot describe it.")
             return out
         # ffprobe reports "HE-AAC" for both v1 and v2, because Parametric
         # Stereo is signalled inside the SBR extension payload rather than in
@@ -444,11 +454,34 @@ def ladder(codec: str, bitrate: int | None = None) -> list[dict]:
                  "whole range, with packet-loss concealment built in",
                  "sbr": OPUS_CHOICE.sbr, "ps": OPUS_CHOICE.ps, "active": True}]
     if codec in XHE_ALIASES:
-        return [{"name": XHE_CHOICE.name, "from": None, "to": None,
-                 "range": "16-64k", "why": "MPEG-D USAC in LOAS/LATM -- one "
-                 "configuration, and the strongest thing there is at the "
-                 "bottom of that range",
-                 "sbr": XHE_CHOICE.sbr, "ps": XHE_CHOICE.ps, "active": True}]
+        # exhale's presets, which form a ladder in the same sense the HE-AAC
+        # one does: the rung follows from the bitrate, and is shown so the
+        # choice is visible. The rates are nominal -- the encoder holds a
+        # quality within a rung and lets the rate move with the material.
+        live = exhale_enc.preset_for(bitrate) if bitrate is not None else None
+        rates = [rate for _, rate in exhale_enc.PRESETS]
+        rungs = []
+        for i, (letter, rate) in enumerate(exhale_enc.PRESETS):
+            nxt = rates[i + 1] if i + 1 < len(rates) else None
+            if letter == "a":
+                why = ("the floor. exhale codes in the frequency domain only, "
+                       "so the standard's own low-rate tools are not in play "
+                       "-- this is not what xHE-AAC does at 36k, it is what "
+                       "this encoder does")
+            elif nxt is None:
+                why = ("the top rung; a faster link buys nothing beyond it, "
+                       "so use Opus where there are bits to spare")
+            else:
+                why = (f"exhale preset {letter}, nominally "
+                       f"{rate // 1000} kbps stereo with eSBR")
+            rungs.append({
+                "name": f"{rate // 1000} kbps",
+                "from": rate, "to": nxt,
+                "range": (f"{rate // 1000}-{nxt // 1000}k" if nxt
+                          else f"above {rate // 1000}k"),
+                "why": why, "sbr": True, "ps": False,
+                "active": letter == live})
+        return rungs
     if codec not in AAC_ALIASES:
         raise CodecError(
             f"unknown codec {codec!r}; expected 'opus', 'aac' or 'xhe'")
@@ -501,47 +534,6 @@ def split_adts(buf: bytearray) -> list[bytes]:
 
 
 # --------------------------------------------------------------------------
-# LOAS/LATM framing
-# --------------------------------------------------------------------------
-#
-# The other self-delimiting AAC transport, and the one xHE-AAC needs. ADTS
-# cannot carry it: the ADTS header has a two-bit profile field covering the
-# three MPEG-2 AAC profiles and nothing else, so there is no value in it that
-# means USAC. LOAS has no such field -- the configuration travels as a
-# StreamMuxConfig inside the stream -- which is why broadcast AAC uses it.
-#
-# audioSyncStream() is a plain 3-byte header:
-#
-#     11 bits   syncword, 0x2B7
-#     13 bits   audioMuxLengthBytes, the payload after this header
-#
-# so slicing is the same shape as ADTS and needs no codec knowledge at all.
-
-LOAS_SYNC = 0x2B7
-
-
-def split_loas(buf: bytearray) -> list[bytes]:
-    """Pull whole LOAS frames off the front of ``buf``, in place."""
-    frames: list[bytes] = []
-    while len(buf) >= 3:
-        if buf[0] != 0x56 or (buf[1] & 0xE0) != 0xE0:
-            # Lost sync. The first byte of the syncword is fixed, so that is
-            # what to hunt for; the second is checked on the next pass.
-            nxt = buf.find(b"\x56", 1)
-            if nxt < 0:
-                buf.clear()
-                break
-            del buf[:nxt]
-            continue
-        length = 3 + (((buf[1] & 0x1F) << 8) | buf[2])
-        if len(buf) < length:
-            break
-        frames.append(bytes(buf[:length]))
-        del buf[:length]
-    return frames
-
-
-# --------------------------------------------------------------------------
 # Encoder
 # --------------------------------------------------------------------------
 
@@ -576,7 +568,15 @@ class Encoder:
         self._stop = threading.Event()
         self._ogg = ogg.OggReader()
         self._frames = bytearray()
+        self._usac = exhale_enc.Unpacker()
+        self._mp4 = fmp4.Reader()
         self.error: str | None = None
+
+        # The second process, for xHE-AAC. ffmpeg decodes the source to WAVE
+        # and exhale encodes it, because nothing in ffmpeg can.
+        self.exhale: str | None = None
+        self.preset: str | None = None
+        self._enc_proc: subprocess.Popen | None = None
 
         if (self.passthrough is None and self.choice.encoder == "libfdk_aac"
                 and not has_encoder(self.ffmpeg, "libfdk_aac")):
@@ -584,6 +584,18 @@ class Encoder:
                 f"{self.ffmpeg} has no libfdk_aac, so it cannot encode HE-AAC. "
                 f"Use --codec opus, or point --ffmpeg at a --enable-nonfree build."
             )
+        if self.passthrough is None and self.choice.encoder == "exhale":
+            ok, why = exhale_enc.usable()
+            if not ok:
+                raise CodecError(why)
+            self.exhale = exhale_enc.find_exhale()
+            self.preset = exhale_enc.preset_for(bitrate)
+            if self.preset is None:
+                raise CodecError(
+                    f"this link carries {bitrate / 1000:.0f} kbps and the "
+                    f"lowest xHE-AAC rung is "
+                    f"{exhale_enc.MIN_BITRATE // 1000} kbps stereo. Use Opus, "
+                    f"which spans the whole range, or pick a faster MODCOD.")
 
     def _command(self) -> list[str]:
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error"]
@@ -601,8 +613,24 @@ class Encoder:
             # thing passthrough exists to avoid. The stream keeps its own
             # channel count and sample rate all the way to the far end, where
             # the decoder resamples to the player's rate as it always has.
-            cmd += ["-c:a", "copy", "-f", self.choice.container, "pipe:1"]
-            return cmd
+            cmd += ["-c:a", "copy"]
+            if self.choice.container == "fmp4":
+                # A fragmented MP4, because it is the only container ffmpeg
+                # will remux USAC into that can then be read back from a pipe.
+                # Every fragment carries its own sample sizes, so the access
+                # units come out of it whole.
+                cmd += ["-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                        "-frag_duration", "200000", "-f", "mp4"]
+            else:
+                cmd += ["-f", self.choice.container]
+            return cmd + ["pipe:1"]
+        if self.choice.encoder == "exhale":
+            # ffmpeg's half of the chain: decode whatever the source is to
+            # plain WAVE, which is the only thing exhale reads. Stereo at
+            # 48 kHz because its stdout mode requires stereo and its coding
+            # tools want 32-48 kHz.
+            return cmd + ["-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),
+                          "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"]
         cmd += ["-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),
                 "-c:a", self.choice.encoder, "-b:a", str(self.bitrate)]
         if self.choice.profile:
@@ -618,11 +646,8 @@ class Encoder:
             cmd += ["-vbr", "constrained",
                     "-frame_duration", str(OPUS_FRAME_MS), "-f", "ogg"]
         else:
-            # adts or latm. Both are self-delimiting, so the split below needs
-            # no help from the container; latm is there because xHE-AAC cannot
-            # be carried in ADTS at all.
-            if self.choice.container == "latm":
-                cmd += ["-latm", "1"]
+            # ADTS, which is self-delimiting, so the split below needs no help
+            # from the container.
             cmd += ["-f", self.choice.container]
         cmd += ["pipe:1"]
         return cmd
@@ -632,7 +657,21 @@ class Encoder:
             self._command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             bufsize=0,
         )
-        self._thread = threading.Thread(target=self._pump, daemon=True)
+        source = self._proc
+        if self.exhale and self.passthrough is None:
+            # exhale reads ffmpeg's WAVE straight off the pipe, so neither
+            # process ever holds the audio. Its own stdout is what gets read.
+            self._enc_proc = subprocess.Popen(
+                exhale_enc.command(self.exhale, self.preset),
+                stdin=self._proc.stdout, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, bufsize=0,
+            )
+            # Closing our copy is what lets exhale see end of input when
+            # ffmpeg stops; without it the pipe stays open on our side.
+            self._proc.stdout.close()
+            source = self._enc_proc
+        self._thread = threading.Thread(target=self._pump, args=(source,),
+                                        daemon=True)
         self._thread.start()
         threading.Thread(target=self._pump_stderr, daemon=True).start()
 
@@ -659,11 +698,11 @@ class Encoder:
         except (OSError, ValueError):
             pass
 
-    def _pump(self) -> None:
-        assert self._proc and self._proc.stdout
+    def _pump(self, proc: subprocess.Popen) -> None:
+        assert proc.stdout
         try:
             while not self._stop.is_set():
-                chunk = self._proc.stdout.read(4096)
+                chunk = proc.stdout.read(4096)
                 if not chunk:
                     break
                 for pkt in self._extract(chunk):
@@ -673,6 +712,17 @@ class Encoder:
         # stderr is drained by its own thread; see _pump_stderr.
 
     def _extract(self, chunk: bytes) -> list[bytes]:
+        if self.choice.container == "fmp4":
+            # Two shapes arrive here and both end as bare access units: what
+            # exhale encoded, wrapped in LOAS, and what ffmpeg remuxed for
+            # passthrough, wrapped in a fragmented MP4.
+            if self.passthrough is None:
+                units = self._usac.feed(chunk)
+                self._config = self._usac.config
+            else:
+                units = self._mp4.feed(chunk)
+                self._config = self._mp4.config
+            return units
         if self.choice.container == "ogg":
             out = []
             for pkt in self._ogg.feed(chunk):
@@ -686,18 +736,31 @@ class Encoder:
                     continue
                 out.append(pkt)
             return out
-        # Both splitters consume in place and leave any partial frame behind,
+        # The splitter consumes in place and leaves any partial frame behind,
         # so append to the persistent buffer rather than a temporary.
         self._frames.extend(chunk)
-        if self.choice.container == "latm":
-            return split_loas(self._frames)
         return split_adts(self._frames)
 
     @property
     def config(self) -> bytes | None:
-        """Decoder configuration, once seen. OpusHead for Opus; None for AAC,
-        whose ADTS headers already carry everything a decoder needs."""
+        """Decoder configuration, once seen.
+
+        OpusHead for Opus and the AudioSpecificConfig for xHE-AAC. None for
+        AAC, whose ADTS headers already carry everything a decoder needs.
+        """
         return self._config
+
+    @property
+    def frame_samples(self) -> int:
+        """How many samples one packet decodes to, where it is known.
+
+        Only xHE-AAC needs this, and only because a fragmented MP4 has to
+        state it. For passthrough it is read off the source's own fragments;
+        for anything we encode it is what the encoder was told to produce.
+        """
+        if self.passthrough is not None and self._mp4.frame_samples:
+            return self._mp4.frame_samples
+        return exhale_enc.FRAME_SAMPLES
 
     def packets(self, limit: int = 256) -> list[bytes]:
         out = []
@@ -714,16 +777,22 @@ class Encoder:
 
     @property
     def alive(self) -> bool:
-        return self._proc is not None and self._proc.poll() is None
+        for proc in (self._proc, self._enc_proc):
+            if proc is not None and proc.poll() is not None:
+                return False
+        return self._proc is not None
 
     def stop(self) -> None:
         self._stop.set()
-        if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
+        # The encoder first, so it is not left reading a pipe nobody writes.
+        for proc in (self._enc_proc, self._proc):
+            if proc is None or proc.poll() is not None:
+                continue
+            proc.terminate()
             try:
-                self._proc.wait(timeout=3)
+                proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
+                proc.kill()
 
 
 # --------------------------------------------------------------------------
@@ -739,32 +808,38 @@ class Decoder:
     """
 
     def __init__(self, codec_id: int, config: bytes | None = None,
-                 ffmpeg: str | None = None):
+                 ffmpeg: str | None = None,
+                 frame_samples: int = exhale_enc.FRAME_SAMPLES):
         self.codec_id = codec_id
         self.ffmpeg = find_ffmpeg(ffmpeg)
         self.config = config
+        self.frame_samples = frame_samples
         self._proc: subprocess.Popen | None = None
         self._pcm: queue.Queue[bytes] = queue.Queue()
         self._stop = threading.Event()
         self._ogg = ogg.OggWriter()
+        self._mp4: fmp4.Writer | None = None
         self._started = False
         self._granule = 0
 
     def _command(self) -> list[str]:
-        # The demuxer follows the container the transmitter used, which follows
-        # the codec: Opus in Ogg, xHE-AAC in LOAS/LATM, the rest in ADTS. Any
-        # recent ffmpeg decodes all three; xHE-AAC needs 7.1 or later, where
-        # the native AAC decoder gained USAC.
+        # The demuxer follows the container the packets are rewrapped in,
+        # which follows the codec: Opus in Ogg, xHE-AAC in a fragmented MP4,
+        # the rest in ADTS. Any recent ffmpeg decodes all three; xHE-AAC needs
+        # 7.1 or later, where the native AAC decoder gained USAC.
         fmt = {framing.CODEC_OPUS: "ogg",
-               framing.CODEC_XHE_AAC: "loas"}.get(self.codec_id, "aac")
+               framing.CODEC_XHE_AAC: "mp4"}.get(self.codec_id, "aac")
         return [self.ffmpeg, "-hide_banner", "-loglevel", "error",
                 "-f", fmt, "-i", "pipe:0",
                 "-f", "s16le", "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),
                 "pipe:1"]
 
     def start(self) -> None:
-        if self.codec_id == framing.CODEC_OPUS and not self.config:
-            raise CodecError("Opus decoding needs the OpusHead config packet")
+        if needs_config(self.codec_id) and not self.config:
+            what = ("the OpusHead config packet" if self.codec_id == framing.CODEC_OPUS
+                    else "the AudioSpecificConfig packet")
+            raise CodecError(
+                f"{framing.CODEC_NAMES[self.codec_id]} decoding needs {what}")
         self._proc = subprocess.Popen(
             self._command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, bufsize=0,
@@ -776,6 +851,13 @@ class Decoder:
             head = self._ogg.page([self.config], granule=0, bos=True)
             tags = self._ogg.page([b"OpusTags" + b"\x00\x00\x00\x00" + b"\x00\x00\x00\x00"])
             self._proc.stdin.write(head + tags)
+            self._proc.stdin.flush()
+        elif self.codec_id == framing.CODEC_XHE_AAC:
+            assert self._proc.stdin and self.config
+            self._mp4 = fmp4.Writer(self.config, sample_rate=SAMPLE_RATE,
+                                    channels=CHANNELS,
+                                    frame_samples=self.frame_samples)
+            self._proc.stdin.write(self._mp4.init_segment())
             self._proc.stdin.flush()
         self._started = True
 
@@ -799,6 +881,8 @@ class Decoder:
             if self.codec_id == framing.CODEC_OPUS:
                 self._granule += len(packets) * SAMPLE_RATE * OPUS_FRAME_MS // 1000
                 self._proc.stdin.write(self._ogg.pages_for(packets, self._granule))
+            elif self._mp4 is not None:
+                self._proc.stdin.write(self._mp4.fragment(packets))
             else:
                 self._proc.stdin.write(b"".join(packets))
             self._proc.stdin.flush()

@@ -671,9 +671,8 @@ stereo near 160 kbps:
 Those switches are otherwise invisible, so the transmit UI draws the ladder
 with the live rung lit. It needs a `--enable-nonfree` ffmpeg with `libfdk_aac`.
 
-**xHE-AAC (MPEG-D USAC)** has a code point, a transport and a decode path, so a
-source that already carries it can be relayed bit-exact and played at the far
-end. It cannot be *encoded* here, and that is not something this code can fix:
+**xHE-AAC (MPEG-D USAC)** encodes, decodes and passes through, and none of it
+goes through ffmpeg's encoders, because none of them can do it:
 
 - the open-source Fraunhofer FDK ships a USAC decoder and **no USAC encoder**,
   which is why `libfdk_aac` is present in this build and still rejects
@@ -681,27 +680,60 @@ end. It cannot be *encoded* here, and that is not something this code can fix:
 - ffmpeg's native AAC encoder is LC only, and so is MediaFoundation's;
 - no encoder in this build advertises USAC at all.
 
-Making one needs exhale, Apple's `afconvert`, or a licensed Fraunhofer encoder.
-So the codec dropdown asks *this* ffmpeg what it can really do — by encoding a
-twentieth of a second and seeing whether it succeeds — and shows anything it
-cannot as disabled, with the reason. A listed encoder that fails at Start is a
-control that looks alive and does nothing.
+So it uses one that can. [exhale](https://gitlab.com/ecodis/exhale) is a small
+open-source USAC encoder; `tools/build_exhale.py` fetches its source at a
+pinned revision, makes two changes to it, builds it, and puts the result in
+`bin/`. Nothing is downloaded pre-built and no binary is committed.
 
-Passthrough is the useful case anyway: xHE-AAC exists to be good at 24–32 kbps,
-which is exactly the range these channels have.
+```bash
+python tools/build_exhale.py
+```
 
-It travels in **LOAS/LATM, not ADTS**, and it has to. An ADTS header carries a
-two-bit profile field covering the three MPEG-2 AAC profiles, and there is no
-value in it that means USAC — the configuration in a LOAS stream travels as a
-StreamMuxConfig instead, which is why broadcast AAC uses it. LOAS is equally
-self-delimiting: an 11-bit syncword `0x2B7` and a 13-bit length, so slicing is
-the same shape as ADTS and needs no codec knowledge.
+The chain is `ffmpeg → WAVE → exhale → access units`. The codec dropdown asks
+whether that will work before offering it, and shows the reason when it will
+not — a listed encoder that fails at Start is a control that looks alive and
+does nothing.
 
-That transport is verified end to end through the real encoder and decoder —
-191 packets, every syncword right, every length exact, 8.1 s in and 8.1 s out,
-identical when fed a byte at a time. It is exercised with HE-AAC in LOAS
-because that is what this machine can produce; what remains untested here is
-only whether ffmpeg's own USAC decoder works, which needs ffmpeg 7.1 or later.
+Its rungs are exhale's presets, chosen by bitrate the way the HE-AAC ladder is,
+from **36 kbps stereo** up to 108 in twelves. Below 36 the dropdown says so
+rather than failing later. That floor is exhale's, not the standard's: it
+implements the frequency-domain coding tools and not ACELP or the low-rate
+stereo tools, so 36 kbps here is not what xHE-AAC does at 36 kbps.
+
+It is **constant quality, not constant bitrate** — there is no rate control to
+ask. On easy material it runs well under the rung it was given (a tone at the
+48k rung measured 15.7 kbps); on demanding material it can run over. Leave the
+link some headroom, or use Opus, which honours the number.
+
+**The packets travel bare, with the configuration sent out of band** — the same
+arrangement Opus uses, and for the same reason: no self-delimiting AAC
+transport can carry USAC. ADTS cannot describe it at all, its profile field
+having no value that means USAC. LOAS can describe it, and ffmpeg will not
+decode it: the muxer refuses outright — *"Muxing MPEG-4 AOT 42 in LATM is not
+supported"* — and the `aac_latm` decoder cannot parse a USAC config either,
+measured by feeding it one that ffmpeg itself reads happily out of an MP4,
+rebuilt at all nine plausible bit lengths and rejected at every one.
+
+What ffmpeg does decode is MP4. A plain MP4 cannot be streamed — its sample
+table can only be written once the last sample is known — so the receiver
+rebuilds the packets into a **fragmented MP4**, the thing DASH and HLS have
+carried for a decade, and pipes that in. `fmp4.py` writes it and reads it.
+
+Measured, through the real encoder and decoder:
+
+| | |
+|---|---|
+| every rung, 36k to 108k | 282 access units of 282, decoded 12.03 s of 12.03 |
+| round trip vs. the source | correlation 0.9996 at 36k, rising to 0.9999 at 108k |
+| passthrough of an xHE-AAC file | 282 units relayed, **bit-exact**, correlation 0.9999 |
+| container transparency | our fragments decode **byte-identically** to the encoder's own MP4 |
+| joining mid-broadcast | audio within 341 ms, worst of 24 starting points |
+
+`python tools/xhecheck.py` runs all of that.
+
+One behaviour to know about: exhale **levels to −23 LUFS** whenever it writes
+to a pipe, so the transmitted loudness is normalised and the first second is
+the leveller settling. Passthrough is untouched.
 
 Codec config and PAD are **retransmitted once a second, not sent once**. A
 receiver joining mid-broadcast has missed anything sent at the start — and so
@@ -837,8 +869,9 @@ and licence notice come with it. See [LICENSE](LICENSE).
 ## Requirements
 
 Python 3.14, numpy, scipy, numba, sounddevice. ffmpeg for the codec layer;
-`libfdk_aac` only if you want HE-AAC. VB-CABLE if you want to loop the two
-apps together without hardware.
+`libfdk_aac` only if you want HE-AAC. For xHE-AAC, cmake and a C++ compiler
+once, to build exhale — see `tools/build_exhale.py`. VB-CABLE if you want to
+loop the two apps together without hardware.
 
 ## Layout
 
@@ -856,12 +889,14 @@ qamcore/            the wire format — one copy, both ends
   modulator.py      symbols to real passband audio
   demodulator.py    passband audio back to frames
   channel.py        transmit-side impairments, for testing
-  codec.py          Opus and HE-AAC through ffmpeg, probing, passthrough
+  codec.py          codec choice, probing, passthrough, encode and decode
   streams.py        .pls/.m3u playlists folded into stations and their rates
   icy.py            Icecast/Shoutcast now-playing metadata
   ofdm.py           OFDM: geometry, modulator, demodulator, coded frames
   linkkey.py        the physical layer as one copyable token
   ogg.py            Ogg pages, so Opus packets can be carried bare
+  fmp4.py           fragmented MP4, the only container ffmpeg decodes USAC from
+  exhale.py         the xHE-AAC encoder, and unwrapping what it writes
   scope.py          telemetry for the spectrum and constellation displays
   webui.py          local UI: static files, SSE telemetry, JSON control
 tx.py               transmitter

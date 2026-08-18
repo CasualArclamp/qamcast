@@ -77,6 +77,11 @@
     <div class="note" id="backlogNote">&nbsp;</div>
   </div>
 
+  <!-- The control panels, as one region. They are all different
+       heights, so laid out as grid cells the shortest column ends up
+       padded to the tallest and the last panel wraps to a row of its
+       own. Flowing them down columns instead packs them. -->
+  <div class="side">
   <div class="panel">
     <h2>Source</h2>
     <label>Where from</label>
@@ -284,6 +289,8 @@
       anything transmitted only at the start &mdash; and so has the
       interleaver's fill region.
     </div>
+  </div>
+
   </div>
 
   <!-- A test aid, not an operating control, so it stays folded away until

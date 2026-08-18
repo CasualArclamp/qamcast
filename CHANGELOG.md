@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.7.1 — the last panel no longer falls off the bottom
+
+**Fixed**
+
+- **Metadata was marooned at the bottom of the page**, below a column of empty
+  space, because the first grid row held exactly signal-source-encoding-link
+  and there was nowhere left for it. Laying the controls out as grid cells was
+  the mistake: they are all different heights, so every column got padded to
+  the tallest and the overflow wrapped to a row of its own.
+- The page is now **two regions** — the scopes, and everything you set. The
+  controls flow down columns and pack against each other, so a short panel
+  under a tall one sits directly under it. Measured at 2000 px the page went
+  from **1376 px tall to 1018**, with nothing orphaned; at 1280 px, 1935 to
+  1466.
+- The signal panel gained width again in the process: **816 → 869 px**.
+
 ## v1.7.0 — the scopes become instruments
 
 **Fixed**

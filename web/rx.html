@@ -68,6 +68,11 @@
     </div>
   </div>
 
+  <!-- The control panels, as one region. They are all different
+       heights, so laid out as grid cells the shortest column ends up
+       padded to the tallest and the last panel wraps to a row of its
+       own. Flowing them down columns instead packs them. -->
+  <div class="side">
   <div class="panel">
     <h2>Now playing</h2>
     <table>
@@ -181,6 +186,8 @@
       Do not pick the same virtual cable for playback that you are listening
       on, or the decoded audio goes straight back into the modem's input.
     </div>
+  </div>
+
   </div>
 
   <!-- Error counters and the auto-probe: worth having, not worth a column

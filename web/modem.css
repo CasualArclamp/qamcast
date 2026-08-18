@@ -73,23 +73,31 @@ h1 span { color: var(--dim); font-weight: 400; }
 /* A spectrum is worth twice the width of a form field; a full-width strip
    suits something that is only occasionally unfolded. Both are guarded by a
    width query, because spanning two columns in a one-column grid overflows. */
+/* Two regions: the scopes, and everything you set. The scopes want width and
+   the controls want to pack, and they are different enough problems that one
+   grid cannot serve both -- which is what put the last panel on a row of its
+   own at the bottom of an otherwise empty page. */
 @media (min-width: 1000px) {
-  .panel.wide { grid-column: span 2; }
+  .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .panel.span-all { grid-column: 1 / -1; }
 }
-
-/* Past a certain width auto-fit keeps adding columns, and every panel on the
-   page is a short one, so a wide monitor got six narrow columns and two thirds
-   of the screen left empty underneath. Worse, the signal panel -- the only one
-   worth looking at while it runs -- ended up the same width as a dropdown.
-   Cap the count and give the scopes three columns of it. */
 @media (min-width: 1500px) {
-  .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .panel.wide { grid-column: span 2; }
+  .grid { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
 }
 @media (min-width: 1900px) {
-  .grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .panel.wide { grid-column: span 2; }
+  .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
+}
+
+/* Flowed down columns rather than placed in cells, so a short panel under a
+   tall one sits directly under it instead of at the bottom of a row sized by
+   whichever panel elsewhere happened to be longest. */
+.side { display: grid; grid-template-columns: 1fr; gap: 12px; align-content: start; }
+@media (min-width: 1200px) {
+  .side { display: block; columns: 2; column-gap: 12px; }
+  .side > .panel { break-inside: avoid; margin-bottom: 12px; }
+}
+@media (min-width: 1900px) {
+  .side { columns: 3; }
 }
 
 /* The one panel worth looking at while it runs: the scopes side by side, with

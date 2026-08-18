@@ -85,6 +85,44 @@ def step_python() -> bool:
     return True
 
 
+# sounddevice is a wrapper around PortAudio, and pip ships that library inside
+# the Windows and macOS wheels but not the Linux one -- there it is expected to
+# come from the distribution. So on Linux `pip install sounddevice` succeeds
+# and `import sounddevice` then fails with a message about a missing library,
+# which reads like a broken install rather than a missing package.
+PORTAUDIO = {
+    "apt": "sudo apt-get install -y libportaudio2",
+    "dnf": "sudo dnf install -y portaudio",
+    "pacman": "sudo pacman -S --needed portaudio",
+    "zypper": "sudo zypper install -y libportaudio2",
+}
+
+
+def check_portaudio() -> bool:
+    """Whether sounddevice can actually reach a sound system."""
+    try:
+        import sounddevice           # noqa: F401
+        return True
+    except ImportError:
+        return False
+    except Exception as exc:
+        say(f"sounddevice is installed but cannot load: {exc}")
+        if sys.platform.startswith("linux"):
+            say("")
+            say("That is PortAudio, which pip does not ship on Linux. Install")
+            say("it from your distribution:")
+            for tool, cmd in PORTAUDIO.items():
+                if shutil.which(tool):
+                    say(f"  {cmd}")
+                    break
+            else:
+                say("  look for a portaudio or libportaudio2 package")
+        say("")
+        say("Without it both apps still work against WAV files; only the")
+        say("sound-card paths are closed.")
+        return False
+
+
 def step_packages() -> bool:
     head(2, "Python packages")
     missing = []
@@ -96,7 +134,7 @@ def step_packages() -> bool:
             missing.append(name)
             say(f"{name:<14} missing")
     if not missing:
-        return True
+        return check_portaudio() or True    # a warning, not a failure
     print()
     if not ask(f"Install {', '.join(missing)} with pip?"):
         say("skipped. The apps will not start without them.")
@@ -109,6 +147,7 @@ def step_packages() -> bool:
             "environment usually fixes it:")
         say(f"  {sys.executable} -m venv .venv")
         return False
+    check_portaudio()
     return True
 
 

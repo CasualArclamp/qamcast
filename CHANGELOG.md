@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.8.3 — the installer knows why sound fails on Linux
+
+**Fixed**
+
+- **`sounddevice` needs PortAudio, and pip does not ship it on Linux.** The
+  Windows and macOS wheels carry the library inside them; the Linux one
+  expects the distribution to provide it. So `pip install sounddevice`
+  succeeded, `import sounddevice` then failed with a message about a missing
+  library, and the whole install looked broken when one package was missing.
+- The installer now tries the import, names PortAudio when that is what went
+  wrong, and gives the command for whichever package manager is present —
+  apt, dnf, pacman or zypper. It is reported as a warning rather than a
+  failure, because both apps still work against WAV files without a sound
+  card.
+
 ## v1.8.2 — a file source is read at the speed it plays
 
 **Fixed**

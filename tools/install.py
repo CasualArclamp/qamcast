@@ -145,8 +145,10 @@ def step_ffmpeg() -> bool:
         if not winget_ffmpeg():
             say("")
             say("ffmpeg is the one requirement outside pip -- every codec")
-            say("here reads and writes through it. Install it and run this")
-            say("again: https://ffmpeg.org/download.html")
+            say("here reads and writes through it. Either put one in the")
+            say("project's ffmpeg/ folder, or install it and run this again:")
+            say("  https://ffmpeg.org/download.html")
+            say("See ffmpeg/README.md for which build, and where else it looks.")
             return False
         say("installed. You may need a new terminal for PATH to catch up.")
         try:

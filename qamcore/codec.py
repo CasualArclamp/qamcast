@@ -42,15 +42,14 @@ import threading
 from dataclasses import dataclass
 
 from . import exhale as exhale_enc
-from . import fmp4, framing, ogg
+from . import fmp4, framing, local, ogg
 
-# Where to look for an ffmpeg that has libfdk_aac. The bundled Windows builds
-# and anything on PATH will decode everything here, but only a --enable-nonfree
-# build can *encode* HE-AACv2; Opus needs only libopus, which is ubiquitous.
-FFMPEG_CANDIDATES = (
-    r"C:\Users\Gaming\Desktop\HE-AAC FFMPEG GUI\bin\ffmpeg.exe",
-    r"C:\Users\Gaming\Desktop\HE-AAC FFMPEG GUI\bin\ffmpeg",
-)
+# Where to look for ffmpeg, after the environment and qamcast.local.json.
+# Anything on PATH will decode everything here, but only a --enable-nonfree
+# build can *encode* HE-AACv2 -- and that is not usually what a package
+# manager installs, so `ffmpeg/` exists to drop one into. Opus needs only
+# libopus, which every build has.
+FFMPEG_DIRS = ("ffmpeg", os.path.join("ffmpeg", "bin"), "bin")
 
 SAMPLE_RATE = 48000
 CHANNELS = 2
@@ -66,15 +65,21 @@ def find_ffmpeg(explicit: str | None = None) -> str:
         if not os.path.exists(explicit):
             raise CodecError(f"ffmpeg not found at {explicit}")
         return explicit
-    for path in FFMPEG_CANDIDATES:
-        if os.path.exists(path):
-            return path
+    chosen = local.setting("ffmpeg")
+    if chosen and os.path.exists(chosen):
+        return chosen
+    for folder in FFMPEG_DIRS:
+        for name in ("ffmpeg.exe", "ffmpeg"):
+            cand = local.project_dir(folder, name)
+            if os.path.exists(cand):
+                return cand
     found = shutil.which("ffmpeg")
     if found:
         return found
     raise CodecError(
-        "no ffmpeg found. Set --ffmpeg to a build with libfdk_aac if you want "
-        "HE-AACv2; Opus works with any recent build."
+        "no ffmpeg found. Put one in the project's ffmpeg/ folder, set "
+        "QAMCAST_FFMPEG, or pass --ffmpeg. A build with libfdk_aac is only "
+        "needed for HE-AAC; Opus works with any recent one."
     )
 
 

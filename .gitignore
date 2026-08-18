@@ -20,3 +20,13 @@ Thumbs.db
 # changes it makes to the upstream tree.
 bin/
 build/
+
+# Drop-in folders: the contents belong to whoever cloned this, not to the
+# project. The README in each is kept so the folder itself survives a clone.
+ffmpeg/*
+!ffmpeg/README.md
+stations/*
+!stations/README.md
+
+# Paths that are a fact about one computer. See qamcore/local.py.
+qamcast.local.json

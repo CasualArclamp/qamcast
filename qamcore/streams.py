@@ -18,9 +18,12 @@ import os
 import re
 from dataclasses import dataclass, field
 
-# Where the station playlists live. Anything ffmpeg can open still works by
-# typing it in; this is only the shortcut list.
-DEFAULT_DIR = r"C:\Users\Gaming\Desktop\Radio Stream"
+from . import local
+
+# Where the station playlists live -- the environment, then
+# qamcast.local.json, then the project's own stations/ folder. Anything
+# ffmpeg can open still works by typing it in; this is only the shortcut list.
+DEFAULT_DIR = local.setting("stations") or local.project_dir("stations")
 
 # SomaFM and most Icecast setups encode the feed in the path: name-rate-codec.
 # Nothing depends on this matching -- an unrecognised URL simply becomes a

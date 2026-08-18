@@ -933,7 +933,10 @@ and licence notice come with it. See [LICENSE](LICENSE).
 
 Python 3.11 or later, numpy, scipy, numba, sounddevice — `install.bat` or
 `pip install -r requirements.txt`. ffmpeg for the codec layer; `libfdk_aac`
-only if you want HE-AAC. For xHE-AAC, cmake and a C++ compiler once, to build
+only if you want HE-AAC. Drop ffmpeg into the project's **`ffmpeg/`** folder if
+it is not on `PATH`, and radio-stream playlists into **`stations/`** to get
+them in the Station dropdown; both have a README, and both can point elsewhere
+through `qamcast.local.json` or the environment. For xHE-AAC, cmake and a C++ compiler once, to build
 exhale — see `tools/build_exhale.py`. VB-CABLE if you want to loop the two apps
 together without hardware.
 
@@ -958,12 +961,15 @@ qamcore/            the wire format — one copy, both ends
   icy.py            Icecast/Shoutcast now-playing metadata
   ofdm.py           OFDM: geometry, modulator, demodulator, coded frames
   linkkey.py        the physical layer as one copyable token
+  local.py          paths that belong to one machine, not the project
   ogg.py            Ogg pages, so Opus packets can be carried bare
   fmp4.py           fragmented MP4, the only container ffmpeg decodes USAC from
   exhale.py         the xHE-AAC encoder, and unwrapping what it writes
   scope.py          telemetry for the spectrum and constellation displays
   webui.py          local UI: static files, SSE telemetry, JSON control
 install.bat         first run: packages, ffmpeg, optional xHE-AAC, self test
+ffmpeg/             drop ffmpeg here if it is not on PATH
+stations/           drop .pls/.m3u playlists here for the Station dropdown
 tx.py               transmitter
 rx.py               receiver
 web/                the two pages, styling, scopes

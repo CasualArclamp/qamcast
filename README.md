@@ -757,6 +757,47 @@ One behaviour to know about: exhale **levels to −23 LUFS** whenever it writes
 to a pipe, so the transmitted loudness is normalised and the first second is
 the leveller settling. Passthrough is untouched.
 
+### Bit interleaving
+
+Coded bits are spread across the frame before they are mapped, so that bits
+adjacent in the convolutional code are far apart on air. Two measurements
+asked for it.
+
+**Bursts.** Without it, consecutive coded bits share a symbol and, in OFDM,
+adjacent subcarriers — so a frequency notch removes a contiguous run of the
+code, which is the one damage pattern a Viterbi decoder handles worst. The
+`reverb` preset is a *fixed* echo, so it nulls the same subcarriers every
+frame and no amount of power fixes it:
+
+| `OFDMREVERB`, 16QAM 3/4, `reverb` | 21 dB | 24 dB | 30 dB |
+|---|---|---|---|
+| before | **0** | **0** | **0** |
+| after | 24/70 | 52/70 | 57/70 |
+
+Zero at every SNR up to 30 dB, because more power does not refill a null. That
+is a dead configuration made to work, and it puts 3 bits/symbol on an echo path
+where only 2 were reachable.
+
+**Spectrum.** Energy dispersal runs on the *information* bits, and the encoder
+adds structure downstream of it — at rate 1/4 the pattern is `(2,2)`, every bit
+sent twice in a row, so adjacent symbols are correlated by construction however
+white the data was. That put a lump at the carrier the scrambler could not
+reach:
+
+| FM44, above the median | before | after |
+|---|---|---|
+| 64QAM 1/4 | 4.2 dB | **1.8 dB** |
+| 16QAM 1/3 | 3.7 dB | **1.9 dB** |
+| 64QAM 3/4 | 1.8 dB | 1.8 dB |
+
+Flatness inside the band goes 0.68 back to 0.73, which is what the rates above
+1/2 always had.
+
+The permutation is a stride coprime to the frame's coded-bit count, taken near
+the golden ratio so it cannot settle into a short repeating pattern against any
+of the geometries here. The MODCOD codeword is not included — it travels in its
+own slot and is found by correlation — so acquisition is untouched.
+
 Codec config and PAD are **retransmitted once a second, not sent once**. A
 receiver joining mid-broadcast has missed anything sent at the start — and so
 has the interleaver's fill region.

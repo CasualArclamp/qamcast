@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.8.0 — coded bits are interleaved before mapping
+
+**Wire format**
+
+- `WIRE_VERSION` goes to **3**. The frame layout is unchanged — same bits in
+  the same places — but their order on air is not, so old and new builds
+  decode each other into noise. They say so rather than failing quietly.
+
+**Fixed**
+
+- **A fixed echo could kill a rung outright, at any power.** Consecutive coded
+  bits shared a symbol and adjacent subcarriers, so a notch removed a
+  contiguous run of the code — the worst case for a Viterbi decoder. `reverb`
+  nulls the *same* subcarriers every frame, so more SNR never helped:
+  `OFDMREVERB` at 16QAM 3/4 recovered **0 packets at every SNR up to 30 dB**.
+  It now recovers 24/70 at 21 dB and 57/70 at 30. That is 3 bits/symbol on an
+  echo path where only 2 were reachable.
+- **Energy dispersal could not reach the lump the encoder made.** It runs on
+  the information bits, and at rate 1/4 the code sends every bit twice in a
+  row afterwards, correlating adjacent symbols however white the data was.
+  Measured at the FM44 carrier, above the median: 64QAM 1/4 **4.2 → 1.8 dB**,
+  16QAM 1/3 **3.7 → 1.9 dB**, with 3/4 unchanged at 1.8. Flatness 0.68 → 0.73.
+
+**Unchanged**
+
+- MODCOD thresholds. Re-measured across the whole ladder, every rung landed
+  within 0.6 dB of its stored value with mixed signs — noise, not a shift, as
+  expected since interleaving is neutral on plain AWGN. The table stands.
+- Acquisition. The MODCOD codeword has its own slot and is found by
+  correlation, so it is not interleaved and nothing about locking changed.
+
 ## v1.7.2 — a decision grid instead of rings
 
 **Changed**

@@ -32,17 +32,18 @@ a modular arithmetic convention.
 from __future__ import annotations
 
 import functools
+import math
 
 import numpy as np
 
 from . import constellation, conv, profiles
 from .profiles import HEADER_SYMBOLS, PREAMBLE_SYMBOLS, Modcod, Profile
 
-# Bumped to 2 when the signalling block gained the interleaver depth and grew
-# from six bytes to seven. The layout change alone would already make an old
-# and a new build fail to talk -- the CRC covers the whole body -- but failing
-# on an explicit version check says why.
-WIRE_VERSION = 2
+# Bumped to 3 when coded bits began to be interleaved before mapping. Nothing
+# about the frame's *layout* changed -- the same bits in the same places -- but
+# their order on air did, so an old build and a new one decode each other into
+# noise. Version 2 was the signalling block growing to seven bytes.
+WIRE_VERSION = 3
 
 # Codec identifiers, wire format. Appending is safe; renumbering is not.
 CODEC_OPUS = 0
@@ -392,6 +393,54 @@ def pilot_slots(profile: Profile) -> np.ndarray:
     return np.arange(profile.pilot_groups, dtype=np.int64) * profile.pilot_spacing + pos
 
 
+# --------------------------------------------------------------------------
+# Bit interleaving
+# --------------------------------------------------------------------------
+#
+# Coded bits are spread across the frame before they reach the mapper, so that
+# bits adjacent in the convolutional code are far apart on air. Two separate
+# measurements asked for this.
+#
+# **Bursts.** Without it, consecutive coded bits share a symbol and -- in OFDM
+# -- adjacent subcarriers, so a frequency notch removes a contiguous run of the
+# code, which is the one damage pattern a Viterbi decoder handles worst. The
+# `reverb` preset is a fixed echo, so it nulls the same subcarriers every frame
+# and no amount of power fixes it: `OFDMREVERB` at 16QAM 3/4 recovered **zero**
+# packets at every SNR up to 30 dB. With the interleaver it recovers 59 of 70
+# at 30 dB, which turns a dead configuration into a working one and puts 3
+# bits/symbol on an echo path where only 2 were available before.
+#
+# **Spectrum.** Energy dispersal runs on the information bits, and the encoder
+# then adds structure downstream of it -- at rate 1/4 the pattern is (2, 2), so
+# every bit is sent twice in a row and adjacent symbols are correlated by
+# construction however white the data was. That put a lump at the carrier which
+# the scrambler could not reach: 4.2 dB above the median at 64QAM 1/4 against
+# 1.8 dB at 3/4. Interleaving returns it to 1.8 dB, and spectral flatness with
+# it, 0.68 back to 0.73.
+#
+# The MODCOD codeword is not in here -- it travels in its own slot and is found
+# by correlation -- so acquisition is untouched by any of this.
+
+
+@functools.lru_cache(maxsize=None)
+def bit_permutation(n: int) -> tuple[np.ndarray, np.ndarray]:
+    """A stride permutation of n coded bits, and its inverse.
+
+    A stride coprime to the length visits every position exactly once, and
+    neighbouring bits land a stride apart -- so a burst that destroys a run of
+    symbols takes bits that were far apart in the code, which is what the
+    decoder needs to repair them. The golden ratio is the usual choice of
+    stride: it is the hardest number to approximate with a small fraction, so
+    the walk does not settle into a short repeating pattern against any frame
+    geometry, and the geometries here vary with every profile and MODCOD.
+    """
+    stride = int(n / 1.6180339887) | 1
+    while math.gcd(stride, n) != 1:
+        stride += 2
+    perm = (np.arange(n) * stride) % n
+    return perm, np.argsort(perm)
+
+
 def channel_bits(profile: Profile, modcod: Modcod, header: Header,
                  payload_bytes: np.ndarray) -> np.ndarray:
     """Signalling and payload, scrambled and convolutionally coded.
@@ -440,7 +489,7 @@ def channel_bits(profile: Profile, modcod: Modcod, header: Header,
                       (need - len(channel) + 7) // 8,
                       0x1234 ^ header.frame_count)))
         channel = np.concatenate([channel, filler[:need - len(channel)]])
-    return channel[:need]
+    return channel[:need][bit_permutation(need)[0]]
 
 
 def build_frame(profile: Profile, modcod: Modcod, header: Header,
@@ -482,6 +531,8 @@ def decode_payload(profile: Profile, modcod: Modcod, data: np.ndarray,
         data, modcod.bits_per_symbol, noise_var, csi=csi,
         family=profile.constellation_family,
     )
+    span = cap.channel_bits
+    llr = np.concatenate([llr[:span][bit_permutation(span)[1]], llr[span:]])
     need = conv.channel_bits_for(cap.info_bits, modcod.conv_num, modcod.conv_den)
     info = conv.decode(llr[:need], modcod.conv_num, modcod.conv_den, cap.info_bits)
     total = SIGNALLING_BYTES + cap.frame_bytes

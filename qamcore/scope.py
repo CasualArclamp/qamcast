@@ -120,10 +120,31 @@ class ScopeFeed:
         self._sym_pos = 0
         self._seq = 0
         self._spec_avg: np.ndarray | None = None
+        self._ideal: str | None = None
         self._lock = threading.Lock()
         self._window = np.hanning(FFT_SIZE)
 
     # -- producer side ---------------------------------------------------
+
+    def set_reference(self, points: np.ndarray | None) -> None:
+        """The ideal symbol positions, for drawing under the measured cloud.
+
+        Sent from here rather than derived in the browser. The square QAM grid
+        would be easy enough to rebuild in JavaScript; the APSK ring radii are
+        not, and a second implementation of them is a second thing that can
+        disagree with the demodulator about where a symbol should have been.
+        The page is then reading one set of points and the receiver slicing
+        against another, which is precisely the class of bug the link key was
+        introduced to end.
+        """
+        with self._lock:
+            if points is None or not len(points):
+                self._ideal = None
+                return
+            flat = np.empty(len(points) * 2)
+            flat[0::2] = np.asarray(points).real
+            flat[1::2] = np.asarray(points).imag
+            self._ideal = pack_int8(flat, self.CONST_SCALE)
 
     def push_audio(self, x: np.ndarray) -> None:
         x = np.asarray(x, dtype=np.float64).ravel()
@@ -223,6 +244,8 @@ class ScopeFeed:
             out["const"] = pack_int8(flat, self.CONST_SCALE)
             out["const_scale"] = self.CONST_SCALE
             out["const_first"] = pos == 0
+            if pos == 0 and self._ideal:
+                out["ideal"] = self._ideal
         return out
 
 

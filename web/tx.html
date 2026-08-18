@@ -1044,8 +1044,8 @@ connect(s => {
   set('backlogNote', s.backlog_note || '\u00a0');
   if (s.error) set('error', s.error);
   if (s.running) set('bandnote', s.footprint || '\u00a0');
-  drawConst(s.constellation, s.const_first);
-  drawSpec(s.spectrum, s.band);
+  drawConst(s.constellation, s.const_first, {ideal: s.idealPoints, evmDb: s.required_evm_db});
+  drawSpec(s.spectrum, s.band, {nyquist: s.nyquist});
 });
 
 $('start').onclick = async () => {

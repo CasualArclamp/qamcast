@@ -26,9 +26,9 @@ import wave
 
 import numpy as np
 
-from qamcore import (channel as CH, codec, exhale as exhale_mod, framing, icy,
-                     linkkey, modulator, ofdm, profiles, scope, streams,
-                     transport, webui)
+from qamcore import (channel as CH, codec, constellation,
+                     exhale as exhale_mod, framing, icy, linkkey, modulator,
+                     ofdm, profiles, scope, streams, transport, webui)
 
 # Config and PAD are retransmitted this often. They cannot be sent once: a
 # receiver joining mid-broadcast has missed anything at the start, and so has
@@ -441,6 +441,8 @@ class Transmitter:
 
             scope_symbols = scope.symbol_budget(modcod.bits_per_symbol)
             feed = scope.ScopeFeed(profile.sample_rate)
+            feed.set_reference(constellation.points(
+                modcod.bits_per_symbol, profile.constellation_family))
             self._feed = feed
             self._meta = {
                 "profile": profile, "modcod": modcod, "cap": cap,
@@ -629,6 +631,9 @@ class Transmitter:
             "meta_error": self._icy.error if self._icy else None,
             "meta_polls": self._icy.polls if self._icy else 0,
             "band": [lo / nyq, hi / nyq],
+            # So the spectrum can label its frequency axis in kHz rather
+            # than in fractions of a Nyquist the page cannot see.
+            "nyquist": nyq,
             "error": self.error,
         }
         state.update(shot)

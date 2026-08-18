@@ -26,8 +26,8 @@ import wave
 
 import numpy as np
 
-from qamcore import (codec, demodulator, framing, linkkey, ofdm, profiles,
-                     scope, transport, webui)
+from qamcore import (codec, constellation, demodulator, framing, linkkey,
+                     ofdm, profiles, scope, transport, webui)
 
 # Before anything is decoded the constellation is unknown, so start at the
 # floor; scope.symbol_budget raises it once the MODCOD arrives.
@@ -341,6 +341,11 @@ class Receiver:
                         modcod = r.modcod
                         depth = r.header.interleaver
                         chain = transport.ReceiveChain(profile, modcod, depth)
+                        # Where the symbols should have landed, for drawing
+                        # under the ones that did.
+                        feed.set_reference(constellation.points(
+                            modcod.bits_per_symbol,
+                            profile.constellation_family))
 
                     for ptype, payload in chain.push_frame(
                             r.payload, r.header.il_phase, r.header.rs_phase,
@@ -454,6 +459,9 @@ class Receiver:
             "pad_title": pad.title,
             "pad_artist": pad.artist,
             "band": [lo / nyq, hi / nyq],
+            # So the spectrum can label its frequency axis in kHz rather
+            # than in fractions of a Nyquist the page cannot see.
+            "nyquist": nyq,
             "error": self.error,
         }
         state.update(shot)

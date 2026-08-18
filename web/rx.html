@@ -635,8 +635,8 @@ connect(s => {
   set('probeRate', s.probe_rate ? (s.probe_rate/1000).toFixed(1)+' kbps' : '-');
   set('probeMargin', s.probe_margin != null ? s.probe_margin.toFixed(1)+' dB' : '-');
   if (s.error) set('error', s.error);
-  drawConst(s.constellation, s.const_first);
-  drawSpec(s.spectrum, s.band);
+  drawConst(s.constellation, s.const_first, {ideal: s.idealPoints, evmDb: s.required_evm_db});
+  drawSpec(s.spectrum, s.band, {nyquist: s.nyquist});
 });
 
 $('start').onclick = async () => {

@@ -78,12 +78,29 @@ h1 span { color: var(--dim); font-weight: 400; }
   .panel.span-all { grid-column: 1 / -1; }
 }
 
+/* Past a certain width auto-fit keeps adding columns, and every panel on the
+   page is a short one, so a wide monitor got six narrow columns and two thirds
+   of the screen left empty underneath. Worse, the signal panel -- the only one
+   worth looking at while it runs -- ended up the same width as a dropdown.
+   Cap the count and give the scopes three columns of it. */
+@media (min-width: 1500px) {
+  .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .panel.wide { grid-column: span 2; }
+}
+@media (min-width: 1900px) {
+  .grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .panel.wide { grid-column: span 2; }
+}
+
 /* The one panel worth looking at while it runs: the scopes side by side, with
    the numbers that describe the same signal underneath them rather than in a
    separate panel three columns away. */
 .scopes { display: grid; grid-template-columns: 1fr; gap: 10px; }
+/* The constellation was getting a third of an already narrow panel, which put
+   it at about 170 px -- countable at 16QAM, hopeless at 256. Nearer half, and
+   it is the same height as the spectrum and waterfall stacked beside it. */
 @media (min-width: 720px) {
-  .scopes { grid-template-columns: 2fr 1fr; align-items: start; }
+  .scopes { grid-template-columns: 1.35fr 1fr; align-items: start; }
 }
 .scopes canvas + canvas { margin-top: 6px; }
 

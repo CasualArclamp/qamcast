@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.7.0 — the scopes become instruments
+
+**Fixed**
+
+- **The waterfall was showing nothing.** Its colour ramp saturated at about
+  70% of the range, and a QAM spectrum is flat across its passband, so the
+  whole occupied band came out as one solid block of yellow — band edges and
+  nothing else. A perceptually ordered ramp replaces it: the same synthetic
+  passband that used to give **one** colour now gives **fourteen**, so the
+  ripple and the roll-off are visible.
+- The display range is 70 dB below the peak rather than 90. The old span put
+  the part worth looking at in the top tenth of the scale.
+
+**Added**
+
+- **The constellation is drawn against a reference.** The ideal symbol
+  positions appear as faint crosses, ringed at the radius this MODCOD's
+  required Es/N0 allows. The question becomes *are the dots inside the
+  circles*, which needs no arithmetic — instead of *is 42.6 more than 13.4*,
+  which does. The points come from the modem, not from a second copy of the
+  APSK ring maths in JavaScript.
+- **Density**. Symbols are drawn part-transparent so overlapping ones
+  accumulate, showing where the cloud actually concentrates. Every dot is
+  still one really-received symbol at one age — the old decision not to fade
+  by age stands.
+- **The spectrum has a scale**: dB gridlines, kHz ticks, and the profile's
+  band edges marked. On an FM path that upper edge is what keeps the signal
+  below the 19 kHz pilot, which is the whole reason `FM44` stops where it
+  does.
+- **Peak hold**, decaying slowly — the cheapest way to catch interference
+  that only shows up now and then.
+
+**Changed — layout**
+
+- Past 1500 px the grid stopped adding columns. A wide monitor was getting six
+  narrow ones with two thirds of the screen empty underneath, and the signal
+  panel — the only one worth watching while it runs — was as wide as a
+  dropdown. Measured at 1280 px: signal panel **555 → 816 px**, constellation
+  **175 → 333 px**, spectrum and waterfall **110 → 150 px** tall.
+
 ## v1.6.2 — a two-second cushion under the audio
 
 **Fixed**

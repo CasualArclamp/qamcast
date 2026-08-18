@@ -57,6 +57,19 @@ PATCHES = (
 MINGW = (r"C:\msys64\mingw64\bin", r"C:\msys64\ucrt64\bin",
          r"C:\ProgramData\mingw64\mingw64\bin")
 
+# Link the compiler's own runtime in rather than depending on it. A MinGW
+# build otherwise needs libgcc_s_seh-1.dll, libstdc++-6.dll and libwinpthread
+# beside it or on PATH, and they are only on PATH inside an MSYS2 shell -- so
+# the binary runs where it was built and nowhere else, which is the worst
+# possible failure because the build looks like it worked. Costs about a
+# megabyte on a program that is otherwise half of one.
+STATIC = "-static-libgcc -static-libstdc++ -static"
+
+# What a self-contained Windows binary is allowed to import. Anything else
+# means the static link did not take.
+SYSTEM_DLLS = {"kernel32.dll", "msvcrt.dll", "user32.dll", "advapi32.dll",
+               "ucrtbase.dll", "api-ms-win-crt-", "shell32.dll", "ole32.dll"}
+
 
 def run(cmd, **kw):
     print("   $", " ".join(str(c) for c in cmd))
@@ -122,7 +135,16 @@ def build(work: str, tools: dict) -> str:
     if tools["generator"]:
         cmd += ["-G", tools["generator"]]
     if tools["cxx"]:
-        cmd += [f"-DCMAKE_CXX_COMPILER={tools['cxx'].replace(os.sep, '/')}"]
+        cmd += [f"-DCMAKE_CXX_COMPILER={tools['cxx'].replace(os.sep, '/')}",
+                f"-DCMAKE_EXE_LINKER_FLAGS={STATIC}"]
+        # A cache configured before the linker flags existed would keep the
+        # old link line and quietly produce a binary that only runs here.
+        cache = os.path.join(out, "CMakeCache.txt")
+        if os.path.exists(cache):
+            kept = open(cache, encoding="utf-8", errors="replace").read()
+            if STATIC not in kept:
+                print("-- link flags changed; discarding the old build")
+                shutil.rmtree(out, ignore_errors=True)
     run(cmd, env=tools["env"])
     run(["cmake", "--build", out, "--config", "Release"], env=tools["env"])
 
@@ -132,6 +154,27 @@ def build(work: str, tools: dict) -> str:
             if os.path.exists(cand):
                 return cand
     raise SystemExit(f"built, but no exhale binary found under {out}")
+
+
+def imports(binary: str, env: dict) -> list[str]:
+    """Which DLLs a Windows binary needs, where that can be asked.
+
+    Checked because the failure it catches is invisible until someone else
+    runs it: the build succeeds, the binary works in the shell that built it,
+    and it dies with a missing-DLL dialog anywhere else.
+    """
+    objdump = shutil.which("objdump", path=env.get("PATH"))
+    if not objdump or not binary.endswith(".exe"):
+        return []
+    try:
+        out = subprocess.run([objdump, "-p", binary], capture_output=True,
+                             text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    names = [line.split(":", 1)[1].strip()
+             for line in out.splitlines() if "DLL Name:" in line]
+    return [n for n in names
+            if not any(n.lower().startswith(s) for s in SYSTEM_DLLS)]
 
 
 def main() -> int:
@@ -150,16 +193,30 @@ def main() -> int:
     patch(a.work)
     binary = build(a.work, tools)
 
+    needed = imports(binary, tools["env"])
+    if needed:
+        raise SystemExit(
+            "built, but the binary depends on DLLs that are not part of "
+            "Windows:\n  " + "\n  ".join(needed) + "\n\n"
+            "It would run here and fail with a missing-DLL dialog anywhere "
+            "else. The static link did not take -- check that "
+            f"CMAKE_EXE_LINKER_FLAGS={STATIC} reached the build.")
+
     os.makedirs(a.into, exist_ok=True)
     dest = os.path.join(a.into, os.path.basename(binary))
     shutil.copy2(binary, dest)
     os.chmod(dest, 0o755)
     print()
     print(f"-- installed {dest}")
+    if binary.endswith(".exe"):
+        print("-- self-contained: needs nothing but Windows' own DLLs")
 
+    # Asked with the build toolchain's directories taken back off PATH, since
+    # that is what every other program on this machine will see.
+    plain = dict(os.environ)
     sys.path.insert(0, ROOT)
     from qamcore import exhale
-    ok, why = exhale.usable(dest)
+    ok, why = exhale.usable(dest, env=plain)
     print(f"-- usable: {ok}{'' if ok else '  -- ' + why}")
     return 0 if ok else 1
 

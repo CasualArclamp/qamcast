@@ -109,24 +109,53 @@ def command(exe: str, preset: str, indep: int = INDEP_PERIOD) -> list[str]:
     return [exe, preset, "s", str(indep), "-"]
 
 
-def usable(exe: str | None = None) -> tuple[bool, str]:
-    """Whether exhale is present and this build can write LOAS to a pipe.
+# Windows' exit code for "a DLL this program needs was not found". It is worth
+# naming rather than reporting as a silent non-zero exit: a MinGW build links
+# against libgcc_s_seh-1.dll and libstdc++-6.dll, which live in the MSYS2
+# toolchain and are on PATH only inside its own shell -- so the binary runs
+# where it was built and dies with a modal dialog everywhere else.
+STATUS_DLL_NOT_FOUND = 0xC0000135 - (1 << 32)      # -1073741515
+STATUS_ENTRYPOINT_NOT_FOUND = 0xC0000139 - (1 << 32)
 
-    Both halves are asked by running it, because the useful failure is the
-    second one: an exhale built from the upstream tree without the stdout
-    switch turned on runs perfectly and writes an MP4 file named ``-``.
+_MISSING_DLL = (
+    "{name} will not start: Windows cannot find a DLL it needs. It was "
+    "built against the compiler's runtime instead of having it linked in, "
+    "so it only runs where it was built. Rebuild it with "
+    "tools/build_exhale.py, which links statically."
+)
+
+
+def usable(exe: str | None = None, env: dict | None = None) -> tuple[bool, str]:
+    """Whether exhale is present, starts, and can write LOAS to a pipe.
+
+    All three are asked by running it. The last is the subtle one -- an exhale
+    built from the upstream tree without the stdout switch turned on runs
+    perfectly and writes an MP4 file named ``-`` -- but the first two are the
+    ones that actually go wrong, and they are worth telling apart: "not found"
+    and "found but will not start" want different things done about them.
     """
     exe = exe or find_exhale()
     if not exe:
         return False, ("no exhale found. Run tools/build_exhale.py to build "
                        "one, or set QAMCAST_EXHALE to an existing binary.")
+    name = os.path.basename(exe)
     try:
-        done = subprocess.run([exe, "-h"], capture_output=True, timeout=20)
+        done = subprocess.run([exe, "-h"], capture_output=True, timeout=20,
+                              env=env)
+    except subprocess.TimeoutExpired:
+        # On Windows a missing DLL puts up a modal dialog, and the process sits
+        # there until somebody clicks it. Nothing else exhale does can hang.
+        return False, _MISSING_DLL.format(name=name)
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"could not run {os.path.basename(exe)}: {exc}"
+        return False, f"could not run {name}: {exc}"
+    if done.returncode in (STATUS_DLL_NOT_FOUND, STATUS_ENTRYPOINT_NOT_FOUND):
+        return False, _MISSING_DLL.format(name=name)
     banner = (done.stdout or b"") + (done.stderr or b"")
     if b"exhale" not in banner.lower():
-        return False, f"{os.path.basename(exe)} does not look like exhale."
+        if not banner.strip():
+            return False, (f"{name} started and said nothing, and exited "
+                           f"{done.returncode}. It is not a working exhale.")
+        return False, f"{name} does not look like exhale."
     return True, ""
 
 

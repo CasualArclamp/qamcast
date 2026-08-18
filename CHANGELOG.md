@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.5.1 — the built encoder now runs outside the shell that built it
+
+**Fixed**
+
+- **exhale was linked against the compiler's runtime**, so it needed
+  `libgcc_s_seh-1.dll` and `libstdc++-6.dll` beside it or on PATH — and those
+  live in the MSYS2 toolchain, which is on PATH only inside its own shell. It
+  ran where it was built and put up a missing-DLL dialog everywhere else. It
+  is linked statically now: `KERNEL32.dll` and `msvcrt.dll`, both part of
+  Windows, and 1.0 MB.
+- **The build script checks**, rather than trusting the build. It reads the
+  finished binary's imports and refuses to install one that depends on
+  anything Windows does not ship, because this is the failure that looks like
+  success — the compile is clean, the binary works for whoever built it, and
+  it is broken for everyone else.
+- **`usable()` said "does not look like exhale"** when the truth was that
+  Windows would not start it. It now names that case, and tells the two
+  apart: a missing DLL exits `0xC0000135`, or hangs on the modal dialog, and
+  either way says what to do about it.
+- The cached CMake build is discarded when the link flags change, so an
+  existing `build/` cannot quietly keep producing the old link line.
+
 ## v1.5.0 — xHE-AAC encodes
 
 **Added**

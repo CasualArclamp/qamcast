@@ -689,6 +689,11 @@ pinned revision, makes two changes to it, builds it, and puts the result in
 python tools/build_exhale.py
 ```
 
+The binary is linked statically and checked before it is installed: the script
+reads its imports and refuses one that needs anything Windows does not ship.
+That failure looks like success otherwise — a clean compile, a binary that
+works for whoever built it, and a missing-DLL dialog for everyone else.
+
 The chain is `ffmpeg → WAVE → exhale → access units`. The codec dropdown asks
 whether that will work before offering it, and shows the reason when it will
 not — a listed encoder that fails at Start is a control that looks alive and

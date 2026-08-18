@@ -183,7 +183,19 @@ def main() -> int:
                     help="where to keep the source tree and build")
     ap.add_argument("--into", default=os.path.join(ROOT, "bin"),
                     help="where to install the binary")
+    ap.add_argument("--check", action="store_true",
+                    help="report whether a usable exhale is already here, "
+                         "and build nothing. Exits 0 if there is one.")
     a = ap.parse_args()
+
+    if a.check:
+        sys.path.insert(0, ROOT)
+        from qamcore import exhale
+        ok, why = exhale.usable()
+        print(f"exhale: {exhale.find_exhale() or 'not found'}")
+        if not ok:
+            print(why)
+        return 0 if ok else 1
 
     if not shutil.which("cmake"):
         raise SystemExit("cmake not found; exhale's build needs it")

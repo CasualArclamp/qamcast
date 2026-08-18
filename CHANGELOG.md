@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.6.0 — an installer, and xHE-AAC stays out of the way until asked for
+
+**Added**
+
+- **`install.bat`** — first run in five steps: Python, the packages, ffmpeg,
+  xHE-AAC, and a self test that proves the chain rather than listing things
+  that looked fine. Every step says what it is about to do and asks first;
+  nothing is downloaded without permission. `python tools/install.py` is the
+  same on any platform, `--yes` takes the defaults.
+  - Run from an empty folder it fetches the project first, so the file works
+    on its own as a release asset.
+  - It offers ffmpeg through winget where that exists, and says plainly that
+    the package has libopus but not `libfdk_aac`, so Opus will work and
+    HE-AAC encoding will not.
+  - It reports what *this* ffmpeg can encode by trying each codec, rather
+    than by listing what it ought to support.
+  - "Skipped the self test" and "ran it and it passed" end in different
+    words. An installer that says *ready* without having tried anything is
+    the reason people distrust installers.
+- **`requirements.txt`**, which did not exist.
+
+**Changed**
+
+- **The compiler is only ever needed for xHE-AAC, and now nothing asks for it
+  otherwise.** `tx.bat` and `selftest.bat` take `xhe` alongside `opus` and
+  `aac`, and offer to build exhale only when it is picked and missing —
+  declining falls back to Opus rather than failing. Opus and HE-AAC go
+  through ffmpeg as they always did, and *receiving* xHE-AAC needs nothing
+  either: ffmpeg decodes it fine, it just cannot encode it.
+- `tools/build_exhale.py --check` reports whether a usable encoder is already
+  present and builds nothing, which is what the batch files ask.
+
 ## v1.5.1 — the built encoder now runs outside the shell that built it
 
 **Fixed**

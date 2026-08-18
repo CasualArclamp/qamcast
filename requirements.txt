@@ -1,0 +1,12 @@
+# QAMcast's Python dependencies.
+#
+# numpy and scipy do the signal processing; numba compiles the two inner loops
+# that would otherwise decide whether this runs in real time (the Viterbi
+# butterfly and the interpolator). sounddevice is the only way in or out of a
+# sound card -- without it the apps still work against WAV files.
+#
+# ffmpeg is not here because it is not a Python package. See tools/install.py.
+numpy
+scipy
+numba
+sounddevice

@@ -31,6 +31,23 @@ the core is the wire format and is never duplicated. Two copies that had
 drifted by one constellation label would still start up, still lock, and
 decode noise.
 
+## Installing
+
+```
+install.bat
+```
+
+Walks through five steps — Python, the packages, ffmpeg, xHE-AAC, and a self
+test that proves the chain works — asking before each one and downloading
+nothing without permission. `python tools/install.py` is the same thing on any
+platform; `--yes` takes the defaults.
+
+**xHE-AAC is the only step that needs a compiler, and it is optional.** Opus
+and HE-AAC need nothing but ffmpeg, and *receiving* xHE-AAC needs nothing
+either — ffmpeg decodes it perfectly well, it just cannot encode it. The
+installer says so and lets you skip it; `tx.bat` and `selftest.bat` offer the
+build later if you pick that codec.
+
 ## Running it
 
 ```bash
@@ -873,10 +890,11 @@ and licence notice come with it. See [LICENSE](LICENSE).
 
 ## Requirements
 
-Python 3.14, numpy, scipy, numba, sounddevice. ffmpeg for the codec layer;
-`libfdk_aac` only if you want HE-AAC. For xHE-AAC, cmake and a C++ compiler
-once, to build exhale — see `tools/build_exhale.py`. VB-CABLE if you want to
-loop the two apps together without hardware.
+Python 3.11 or later, numpy, scipy, numba, sounddevice — `install.bat` or
+`pip install -r requirements.txt`. ffmpeg for the codec layer; `libfdk_aac`
+only if you want HE-AAC. For xHE-AAC, cmake and a C++ compiler once, to build
+exhale — see `tools/build_exhale.py`. VB-CABLE if you want to loop the two apps
+together without hardware.
 
 ## Layout
 
@@ -904,6 +922,7 @@ qamcore/            the wire format — one copy, both ends
   exhale.py         the xHE-AAC encoder, and unwrapping what it writes
   scope.py          telemetry for the spectrum and constellation displays
   webui.py          local UI: static files, SSE telemetry, JSON control
+install.bat         first run: packages, ffmpeg, optional xHE-AAC, self test
 tx.py               transmitter
 rx.py               receiver
 web/                the two pages, styling, scopes

@@ -50,9 +50,14 @@ if not defined LIST (
     exit /b 1
 )
 
+echo.
+echo  Codec: opus, aac, or xhe. Opus and HE-AAC need only ffmpeg; xhe needs
+echo  the exhale encoder built once, since nothing in ffmpeg can make it.
+echo.
 set "CODEC=opus"
-set /p "CODEC=Codec, opus or aac [opus]: "
+set /p "CODEC=Codec [opus]: "
 if "%CODEC%"=="" set "CODEC=opus"
+if /i "%CODEC%"=="xhe" call :needexhale
 
 set "FAILED="
 for %%P in (%LIST%) do (
@@ -78,4 +83,28 @@ exit /b 0
 :pick
 set "LIST=%~1"
 set "BR=%~2"
+goto :eof
+
+:needexhale
+rem  Only xHE-AAC comes through here. The rest of the self test, and the
+rem  receiver, need no compiler at all.
+echo.
+python tools\build_exhale.py --check
+if not errorlevel 1 goto :eof
+echo.
+echo  xHE-AAC needs the exhale encoder, which is not built yet. One-time
+echo  build from source; needs cmake and a C++ compiler.
+echo.
+set "BUILD="
+set /p "BUILD=Build it now? Y/n: "
+if /i "%BUILD%"=="n" goto :noexhale
+echo.
+python tools\build_exhale.py
+if errorlevel 1 goto :noexhale
+goto :eof
+
+:noexhale
+echo.
+echo  Testing with Opus instead.
+set "CODEC=opus"
 goto :eof

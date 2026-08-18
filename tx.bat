@@ -168,14 +168,51 @@ goto :eof
 rem  Only asked when re-encoding. In passthrough the source decides both, and
 rem  offering a bitrate that will be discarded is just a way to mislead.
 echo.
+echo  Codec:
+echo.
+echo    opus   one codec across 16-192k, with loss concealment  - the default
+echo    aac    HE-AAC, stepping v2 to v1 to LC as the rate rises
+echo    xhe    xHE-AAC, the strongest thing where bits are scarce
+echo.
+echo  Opus and HE-AAC need nothing but ffmpeg. xHE-AAC needs the exhale
+echo  encoder built once, and will offer to do it if you pick it.
+echo.
 set "CODEC=opus"
-set /p "CODEC=Codec, opus or aac [opus]: "
+set /p "CODEC=Codec [opus]: "
 if "%CODEC%"=="" set "CODEC=opus"
+if /i "%CODEC%"=="xhe" call :needexhale
 echo.
 echo  %PROFILE% tops out at %MAXBR% kbps. Ask for more and it will refuse.
 set "BITRATE="
 set /p "BITRATE=Bitrate [%DEFBR%]: "
 if "%BITRATE%"=="" set "BITRATE=%DEFBR%"
+goto :eof
+
+:needexhale
+rem  Reached only by asking for xHE-AAC. Nothing in the Opus or HE-AAC paths
+rem  comes through here, and neither does the receiver -- ffmpeg decodes
+rem  xHE-AAC perfectly well, it just cannot encode it. So a normal install
+rem  never needs a compiler.
+echo.
+python tools\build_exhale.py --check
+if not errorlevel 1 goto :eof
+echo.
+echo  xHE-AAC needs the exhale encoder, which is not built yet. Nothing in
+echo  ffmpeg can encode xHE-AAC, so there is no way around it -- but it is a
+echo  one-time build, from source, and needs cmake and a C++ compiler.
+echo.
+set "BUILD="
+set /p "BUILD=Build it now? Y/n: "
+if /i "%BUILD%"=="n" goto :noexhale
+echo.
+python tools\build_exhale.py
+if errorlevel 1 goto :noexhale
+goto :eof
+
+:noexhale
+echo.
+echo  Carrying on with Opus, which spans the whole range and needs nothing.
+set "CODEC=opus"
 goto :eof
 
 :pickstation

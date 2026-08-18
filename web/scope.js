@@ -81,16 +81,38 @@ const SPEC_H = 150;             // taller than it was, to leave room for a scale
 // flattened into one opaque blob.
 const CONST_SLICES = 4;      // matches scope.SYMBOL_SLICES: one frame's worth
 
+// The decision boundaries, worked out from the ideal points rather than from
+// the MODCOD's name. A square QAM constellation is the product of a set of I
+// levels and a set of Q levels, so the boundaries are the midpoints between
+// neighbouring levels on each axis -- and whether it *is* such a product is
+// something the points can be asked. APSK is not, and gets none: its regions
+// are rings and sectors, and drawing a square grid over them would be a
+// picture of the wrong decision rule.
+function decisionLines(ideal) {
+  const uniq = (arr) => {
+    const out = [];
+    for (const v of arr) if (!out.some(u => Math.abs(u - v) < 0.02)) out.push(v);
+    return out.sort((a, b) => a - b);
+  };
+  const xs = uniq([...ideal].filter((_, i) => i % 2 === 0));
+  const ys = uniq([...ideal].filter((_, i) => i % 2 === 1));
+  if (xs.length * ys.length !== ideal.length / 2) return null;
+  const mids = (v) => v.slice(1).map((x, i) => (x + v[i]) / 2);
+  return { x: mids(xs), y: mids(ys) };
+}
+
 function makeConstellation(canvas) {
-  let recent = [], ideal = null, lastEvm, drawn = false;
+  let recent = [], ideal = null, lines = null, drawn = false;
   return function draw(points, _isFirst, opts) {
     opts = opts || {};
-    if (opts.ideal && opts.ideal.length) ideal = opts.ideal;
+    if (opts.ideal && opts.ideal.length && opts.ideal !== ideal) {
+      ideal = opts.ideal;
+      lines = decisionLines(ideal);
+      drawn = false;             // the grid moved; this frame is not a repeat
+    }
     // Nothing new: leave the canvas alone. Redrawing identical content every
-    // animation frame would cost work for no change. The rings move with the
-    // MODCOD, so a change of requirement counts as new.
-    if (!points && drawn && opts.evmDb === lastEvm) return;
-    lastEvm = opts.evmDb;
+    // animation frame would cost work for no change.
+    if (!points && drawn) return;
     if (points) {
       recent.push(points);
       while (recent.length > CONST_SLICES) recent.shift();
@@ -109,26 +131,34 @@ function makeConstellation(canvas) {
     ctx.moveTo(0, cy); ctx.lineTo(w, cy);
     ctx.stroke();
 
-    // Where the symbols should have landed, and how far they may stray before
-    // this MODCOD stops working. With both drawn, the question the plot
-    // answers becomes "is the cloud inside the circles", which needs no
-    // arithmetic -- rather than "is 42.6 more than 13.4", which does.
+    // The decision grid: one cell per symbol, and a dot in the wrong cell is a
+    // bit error. That is the same judgement the demodulator makes, drawn --
+    // which is more use than a distance, because it shows *which way* the
+    // cloud is drifting as well as how far.
+    if (lines) {
+      ctx.strokeStyle = 'rgba(88,166,255,0.22)';
+      ctx.beginPath();
+      for (const v of lines.x) {
+        const x = Math.round(cx + v * s) + 0.5;
+        ctx.moveTo(x, 0); ctx.lineTo(x, h);
+      }
+      for (const v of lines.y) {
+        const y = Math.round(cy - v * s) + 0.5;
+        ctx.moveTo(0, y); ctx.lineTo(w, y);
+      }
+      ctx.stroke();
+    }
+    // Where each symbol should have landed, so gain and rotation errors show
+    // as an offset from the mark rather than only as a drift across a cell.
     if (ideal && ideal.length) {
-      const r = opts.evmDb != null && opts.evmDb > 0
-          ? Math.pow(10, -opts.evmDb / 20) * s : 0;
-      ctx.strokeStyle = 'rgba(139,148,158,0.32)';
+      ctx.strokeStyle = 'rgba(139,148,158,0.30)';
+      ctx.beginPath();
       for (let i = 0; i < ideal.length; i += 2) {
         const x = cx + ideal[i] * s, y = cy - ideal[i + 1] * s;
-        ctx.beginPath();
-        ctx.moveTo(x - 3, y); ctx.lineTo(x + 3, y);
-        ctx.moveTo(x, y - 3); ctx.lineTo(x, y + 3);
-        ctx.stroke();
-        if (r > 1.5) {
-          ctx.beginPath();
-          ctx.arc(x, y, r, 0, 6.2832);
-          ctx.stroke();
-        }
+        ctx.moveTo(x - 2.5, y); ctx.lineTo(x + 2.5, y);
+        ctx.moveTo(x, y - 2.5); ctx.lineTo(x, y + 2.5);
       }
+      ctx.stroke();
     }
 
     if (!recent.length) {

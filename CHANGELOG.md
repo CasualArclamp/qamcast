@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.7.2 — a decision grid instead of rings
+
+**Changed**
+
+- **The constellation is divided into decision cells** rather than ringed at
+  the EVM radius. One cell per symbol, and a dot in the wrong cell is a bit
+  error — the same judgement the demodulator makes, drawn. It shows *which
+  way* the cloud is drifting as well as how far, which a radius cannot.
+- The boundaries come from the ideal points, not from the MODCOD's name: a
+  square QAM constellation is a product of I levels and Q levels, and whether
+  it is one is something the points can be asked. Checked against every
+  constellation the modem builds — 4/16/64/256QAM each get exactly one cell
+  per symbol, and APSK correctly gets none, since its regions are rings and
+  sectors and a square grid would be a picture of the wrong decision rule.
+
 ## v1.7.1 — the last panel no longer falls off the bottom
 
 **Fixed**

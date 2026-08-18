@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.8.2 — a file source is read at the speed it plays
+
+**Fixed**
+
+- **Local files were read as fast as the disk could supply them.** A live
+  stream paces itself; a file does not, and ffmpeg was handing over the whole
+  thing at once — a 60 s WAV arrived as **60 s of packets in under 6**, ten
+  times real time. The channel carries one, so the queue filled and everything
+  past its 6 s cap was thrown away: perhaps a tenth of the audio reached the
+  far end, in bursts with gaps between them, and the panel reported that the
+  encoder was outrunning the channel, which it was.
+- It affected every local source — WAV, FLAC, MP3 — and looked like a
+  transcoding failure because the result was unlistenable. The transcode was
+  always fine.
+- Measured on the same 90 s file afterwards: **0 dropped**, and the panel note
+  goes from *"outrunning the channel"* to *"absorbing the stream's burst"*.
+- It also explains a number that had been wrong for a while: the self test
+  reported **127.4 s of recovered audio for 36.1 s sent** on xHE-AAC. It now
+  reports 30.1 s, which is the 36.1 sent minus the six-second interleaver.
+
+Network sources are untouched — they arrive in real time already, and pacing
+them would only add drift.
+
 ## v1.8.1 — pick a side of the cable
 
 **Added**

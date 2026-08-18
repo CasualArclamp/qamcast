@@ -576,6 +576,8 @@ class Encoder:
         self._usac = exhale_enc.Unpacker()
         self._mp4 = fmp4.Reader()
         self.error: str | None = None
+        self.network = source.lower().startswith(
+            ("http://", "https://", "rtmp://", "rtsp://", "srt://", "udp://"))
 
         # The second process, for xHE-AAC. ffmpeg decodes the source to WAVE
         # and exhale encodes it, because nothing in ffmpeg can.
@@ -606,12 +608,22 @@ class Encoder:
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error"]
         if self.loop:
             cmd += ["-stream_loop", "-1"]
-        # Reconnect belongs to the HTTP protocol layer, so it must only be
-        # offered for network sources -- ffmpeg rejects the whole invocation
-        # with "Option reconnect not found" when the input is a local file.
-        if self.source.lower().startswith(("http://", "https://", "rtmp://", "rtsp://")):
+        if self.network:
+            # Reconnect belongs to the HTTP protocol layer, so it must only be
+            # offered for network sources -- ffmpeg rejects the whole
+            # invocation with "Option reconnect not found" for a local file.
             cmd += ["-reconnect", "1", "-reconnect_streamed", "1",
                     "-reconnect_delay_max", "5"]
+        else:
+            # Read a file at the speed it plays, not at the speed the disk can
+            # supply it. A live stream paces itself; a file does not, and
+            # without this ffmpeg hands over the whole thing at once -- a 60 s
+            # WAV arrived as 60 s of packets in under 6, ten times real time.
+            # The channel can only carry one, so the queue filled and
+            # everything past its 6 s cap was dropped: the audio at the far
+            # end was mostly gaps, and the panel said the encoder was
+            # outrunning the channel, which it was.
+            cmd += ["-re"]
         cmd += ["-i", self.source, "-vn"]
         if self.passthrough is not None:
             # No -ac and no -ar: those would force a decode, which is the one

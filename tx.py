@@ -1347,9 +1347,14 @@ def _place(x: np.ndarray, channel: str) -> np.ndarray:
     return out
 
 
-def open_output(device: str, rate: int, channel: str = "mono"):
-    if not device or device == "wav":
+def open_output(device: str | None, rate: int, channel: str = "mono"):
+    # Empty string or None means "use default audio device"
+    # Only explicit "wav" writes to a file
+    if device == "wav":
         return WavSink("tx.wav", rate, channel)
+    # None or empty string -> use default device (pass None to sounddevice)
+    if not device:
+        return DeviceSink(None, rate, channel)
     return DeviceSink(int(device), rate, channel)
 
 
@@ -1357,7 +1362,10 @@ def open_output(device: str, rate: int, channel: str = "mono"):
 # fifty entries for a dozen devices. MME lists each device exactly once and
 # accepts any sample rate -- by resampling, which costs a little quality, so
 # the other APIs stay available behind `every_api`.
-PREFERRED_API = "MME"
+# On macOS and Linux, CoreAudio/ALSA/PulseAudio are the native APIs and
+# don't need filtering.
+import platform
+PREFERRED_API = "MME" if platform.system() == "Windows" else None
 
 
 def list_devices(output: bool, every_api: bool = False) -> list[dict]:
@@ -1376,7 +1384,7 @@ def list_devices(output: bool, every_api: bool = False) -> list[dict]:
             api = sd.query_hostapis(d["hostapi"])["name"]
         except Exception:
             api = "?"
-        if not every_api and PREFERRED_API not in api:
+        if not every_api and PREFERRED_API is not None and PREFERRED_API not in api:
             continue
         label = d["name"] if not every_api else f"{d['name']} [{api}]"
         out.append({"index": i, "name": label, "api": api,

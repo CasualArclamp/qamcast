@@ -779,19 +779,33 @@ class DevicePlayer(Monitoring):
             pass
 
 
-def open_input(device: str, rate: int, channel: str = "mono"):
-    if not device or device == "wav":
-        return WavSource("tx.wav", rate, channel)
+def open_input(device: str | None, rate: int, channel: str = "mono"):
+    # Empty string or None means "use default audio device"
+    # Only explicit "wav" writes to a file
+    if device == "wav":
+        return WavSource("rx.wav", rate, channel)
+    # None or empty string -> use default device (pass None to sounddevice)
+    if not device:
+        return DeviceSource(None, rate, channel)
     return DeviceSource(int(device), rate, channel)
 
 
-def open_player(device: str, rate: int, record: str | None = None):
+def open_player(device: str | None, rate: int, record: str | None = None):
     live: object = NullPlayer()
-    if device and device != "none":
+    # None or empty string -> use default output device
+    # "none" explicitly means no output device
+    if device is not None and device != "" and device != "none":
         try:
             live = DevicePlayer(int(device), rate)
         except Exception:
             live = NullPlayer()
+    elif device is None or device == "":
+        # Use default output device
+        try:
+            live = DevicePlayer(None, rate)
+        except Exception:
+            live = NullPlayer()
+    # else device == "none" -> NullPlayer (no output)
     if record:
         return WavPlayer(record, rate, also=live if not isinstance(live, NullPlayer) else None)
     return live

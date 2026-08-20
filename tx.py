@@ -18,6 +18,7 @@ end; modulation, coding and codec all travel in the frame header.
 from __future__ import annotations
 
 import argparse
+import platform
 import queue
 import sys
 import threading
@@ -1362,9 +1363,9 @@ def open_output(device: str | None, rate: int, channel: str = "mono"):
 # fifty entries for a dozen devices. MME lists each device exactly once and
 # accepts any sample rate -- by resampling, which costs a little quality, so
 # the other APIs stay available behind `every_api`.
-# On macOS and Linux, CoreAudio/ALSA/PulseAudio are the native APIs and
-# don't need filtering.
-import platform
+# Only Windows needs the filter. CoreAudio and ALSA/PulseAudio each list a
+# device once already, so filtering there removed every device and left the
+# dropdown empty -- which is what this looked like on a Mac.
 PREFERRED_API = "MME" if platform.system() == "Windows" else None
 
 

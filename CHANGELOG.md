@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.8.4 — device selection on macOS and Linux
+
+**Added** — thanks to [@wertyilk](https://github.com/wertyilk) ([#1](https://github.com/CasualArclamp/qamcast/pull/1))
+
+- **The device list was empty on anything but Windows.** It was filtered to
+  the MME host API, which exists only on Windows, so CoreAudio and
+  ALSA/PulseAudio devices were all discarded and the only choice left was
+  writing a WAV. The filter now applies on Windows and nowhere else, which is
+  the only place it was ever for: MME lists each device exactly once, while
+  the other Windows APIs list every card several times over.
+- **Giving no device now means the machine's default**, on both apps, rather
+  than silently writing a file. `--device wav` still writes one, and
+  `--output none` on the receiver still plays nowhere.
+
+**Fixed** — regressions from that same change
+
+- **The receiver read `rx.wav`, which nothing writes.** The transmitter writes
+  `tx.wav`, so `--device wav` at both ends — the documented no-hardware
+  loopback, and what `tools/selftest.py` runs — failed with a
+  `FileNotFoundError` and no lock at all.
+- **`--input` ignored the filename it was given** and always read the
+  hardcoded one. It reads the file you name now, which is what makes it
+  possible to keep a capture and decode it later.
+- `platform` was imported in the middle of the file, beside the one line
+  using it.
+
 ## v1.8.3 — the installer knows why sound fails on Linux
 
 **Fixed**

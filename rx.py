@@ -166,7 +166,8 @@ class Receiver:
         self._thread = threading.Thread(
             target=self._run,
             args=(profile, cfg.get("device", ""), cfg.get("outdev", ""),
-                  cfg.get("record") or None, cfg.get("channel", "mono")),
+                  cfg.get("record") or None, cfg.get("channel", "mono"),
+                  cfg.get("infile") or "tx.wav"),
             daemon=True)
         self._thread.start()
         return {"ok": True}
@@ -270,10 +271,11 @@ class Receiver:
     # -- worker ----------------------------------------------------------
 
     def _run(self, profile, device, outdev, record=None,
-             channel="mono") -> None:
+             channel="mono", infile="tx.wav") -> None:
         src = player = dec = None
         try:
-            src = self._src = open_input(device, profile.sample_rate, channel)
+            src = self._src = open_input(device, profile.sample_rate,
+                                         channel, infile)
             dem = (ofdm.CodedDemodulator(profile) if profile.is_ofdm
                    else demodulator.Demodulator(profile))
             player = open_player(outdev, codec.SAMPLE_RATE, record)
@@ -779,33 +781,34 @@ class DevicePlayer(Monitoring):
             pass
 
 
-def open_input(device: str | None, rate: int, channel: str = "mono"):
-    # Empty string or None means "use default audio device"
-    # Only explicit "wav" writes to a file
+def open_input(device: str | None, rate: int, channel: str = "mono",
+               path: str = "tx.wav"):
+    """A capture source. ``device`` is an index, "wav", or empty for the
+    default device; ``path`` is the file "wav" means.
+
+    The default is tx.wav because that is what the transmitter writes, which
+    is what makes `--device wav` at both ends a loopback with no hardware.
+    """
     if device == "wav":
-        return WavSource("rx.wav", rate, channel)
-    # None or empty string -> use default device (pass None to sounddevice)
+        return WavSource(path, rate, channel)
     if not device:
+        # Empty or None is "whatever this machine calls its default", which
+        # is the only thing that can be meant on a machine whose device list
+        # the caller never saw.
         return DeviceSource(None, rate, channel)
     return DeviceSource(int(device), rate, channel)
 
 
 def open_player(device: str | None, rate: int, record: str | None = None):
+    """An audio sink. An index plays there, empty plays on the default device,
+    and "none" plays nowhere -- which is not the same as empty, and is what
+    the self test and any headless run want."""
     live: object = NullPlayer()
-    # None or empty string -> use default output device
-    # "none" explicitly means no output device
-    if device is not None and device != "" and device != "none":
+    if device != "none":
         try:
-            live = DevicePlayer(int(device), rate)
+            live = DevicePlayer(int(device) if device else None, rate)
         except Exception:
             live = NullPlayer()
-    elif device is None or device == "":
-        # Use default output device
-        try:
-            live = DevicePlayer(None, rate)
-        except Exception:
-            live = NullPlayer()
-    # else device == "none" -> NullPlayer (no output)
     if record:
         return WavPlayer(record, rate, also=live if not isinstance(live, NullPlayer) else None)
     return live
@@ -918,7 +921,7 @@ def main() -> int:
     if a.profile or a.link_key:
         device = "wav" if a.infile else a.device
         res = rx.start({"profile": a.profile, "device": device,
-                        "channel": a.channel,
+                        "channel": a.channel, "infile": a.infile,
                         "outdev": a.output, "record": a.record,
                         "link_key": a.link_key,
                         "sample_rate": a.sample_rate, "symbol_rate": a.symbol_rate,

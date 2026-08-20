@@ -72,6 +72,8 @@ python rx.py --no-ui --profile WIDE --device 12 --output 6 --record out.wav
 
 `--device wav` writes `tx.wav` instead of using a sound card, and the receiver
 reads it back with `--input tx.wav` — a complete loopback with no hardware.
+Giving no device at all uses whatever the machine calls its default;
+`--output none` on the receiver plays nowhere, which is not the same thing.
 `python tx.py --list-devices` enumerates.
 
 **`--channel mono | left | right`** picks which side of a stereo card carries

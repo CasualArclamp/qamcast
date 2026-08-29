@@ -525,6 +525,15 @@ Indices 0–12 are the curated ladder; 13–23 fill in the rest of the grid for
 manual use. All 24 thresholds are measured rather than inferred — re-measure
 any time with `tools/thresholds.py`.
 
+**Eleven of the twenty-four are beaten outright by another rung** — another
+combination carries as much or more and asks no more of the signal. 256QAM 1/4
+and 16QAM 1/2 both come to 24.3 kbps on `FM44`, and the first wants 9.7 dB more
+EVM to do it. That is a consequence of the grid holding every combination the
+frame header can express rather than only the sensible ones, so they stay
+selectable — but the transmit page marks them with a `*`, says what beats them
+and by how much, and offers the better rung as a button. Automatic selection
+never picks one at either end.
+
 Coding is Reed-Solomon over GF(256) outside a K=7 convolutional code
 (G1 = 0o171, G2 = 0o133) with DVB-S puncturing and soft-decision Viterbi, and
 a Forney convolutional interleaver between them.

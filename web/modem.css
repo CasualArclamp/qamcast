@@ -201,6 +201,16 @@ button {
   transition: border-color .15s;
 }
 button:hover { border-color: var(--accent); }
+/* A note that names a better setting can also apply it, without growing into
+   a control of its own. */
+button.inline {
+  width: auto;
+  margin: 6px 0 0;
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 17px;
+}
+.note.warn button.inline { color: var(--warn); border-color: var(--warn); }
 button.go { background: #1f6feb; border-color: #1f6feb; color: #fff; }
 button.stop { background: #6e2530; border-color: #8b2c3b; color: #fff; }
 

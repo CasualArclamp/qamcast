@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.8.6 — the transmit page says which rungs are a bad deal
+
+**Added**
+
+- **Eleven of the twenty-four MODCOD rungs are beaten outright by another
+  one** — same bitrate or more, for the same signal or less — and nothing said
+  so. 256QAM 1/4 and 16QAM 1/2 both come to 24.3 kbps on `FM44`, and the first
+  wants 9.7 dB more EVM for it. They are not mistakes: the grid holds every
+  combination the frame header can express, not only the sensible ones. But a
+  dropdown that lists them silently beside the good ones hides the difference.
+- Modulation and Code rate now **mark a beaten rung with a `*`**, marked
+  against whatever the other dropdown is set to, since that is what decides
+  which rung the entry would actually select. Hovering one gives the reason.
+- Choosing one puts the reason under the row in full — *"Beaten by 64QAM 5/6:
+  19% more bitrate and 1.1 dB less signal, in the same bandwidth"* — next to a
+  button that switches to it. The rung named is always the most robust of the
+  ones that beat it, and is never itself beaten, so one click always lands
+  somewhere clean.
+
+Every rung stays selectable, including the beaten ones: measuring a link
+against a deliberately poor one is a real thing to want to do. Automatic
+selection has not picked one at either end since v1.8.5.
+
 ## v1.8.5 — the rate picker reads the ladder instead of counting it
 
 **Fixed**

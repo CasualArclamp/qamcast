@@ -214,6 +214,11 @@
         <select id="codeRate"></select>
       </div>
     </div>
+    <div class="note" id="pDominated">
+      <span id="pDominatedWhy">&nbsp;</span>
+      <button type="button" class="inline" id="pDominatedFix"
+              style="display:none"></button>
+    </div>
     <div class="note why">
       Symbol rate, MODCOD and bitrate are three views of one number: fix any
       two and the third follows. Lock what you want held, edit anything, and
@@ -376,6 +381,10 @@ function fill(sel, items, value) {
   items.forEach(it => {
     const o = document.createElement('option');
     o.value = it.value; o.textContent = it.text;
+    // Hover text, for an entry whose mark is shorter than its reason. These
+    // boxes are half a column wide and "256APSK" already fills one, so a
+    // marked entry can carry a symbol and nothing more.
+    if (it.title) o.title = it.title;
     sel.appendChild(o);
   });
   if (value !== undefined && [...sel.options].some(o => o.value == value)) sel.value = value;
@@ -555,9 +564,9 @@ async function resolve(driver) {
     // left it reading whatever the last preset used while the fitter had
     // chosen something else entirely.
     setSelect($('rolloff'), r.rolloff);
-    fill($('modulation'), modNames().map(m => ({value: m, text: m})), r.modulation);
-    fill($('codeRate'), [...new Set(META.modcods.map(m => m.code_rate))]
-         .map(c => ({value: c, text: c})), r.code_rate);
+    fill($('modulation'), modOptions(r.code_rate), r.modulation);
+    fill($('codeRate'), codeOptions(r.modulation), r.code_rate);
+    paintDominated(r.modulation, r.code_rate);
     // Only rewrite the box if the solver actually moved the number. Restating
     // what someone is still typing, with " kbps" appended, jumps the caret to
     // the end mid-word.
@@ -661,6 +670,84 @@ function modNames() {
                                            || m.modulation))];
 }
 
+// The two dropdowns are two halves of one choice, so anything true of the rung
+// is only visible by reading both at once.
+function rungFor(mod, code) {
+  const f = modFamily();
+  return (META.modcods || []).find(
+      m => ((m.modulations || {})[f] || m.modulation) === mod
+           && m.code_rate === code);
+}
+
+// Eleven of the twenty-four rungs are beaten outright by another one: the same
+// bitrate or more, for the same signal or less. They are not mistakes -- the
+// grid holds every combination the frame header can express, not only the
+// sensible ones -- and they stay selectable. But a list that shows them
+// silently beside the good ones hides the difference, and nothing about
+// "256QAM 1/4" announces that 16QAM 1/2 does the same job 9.7 dB more easily.
+function beats(rung) {
+  if (!rung || rung.dominated_by === null || rung.dominated_by === undefined)
+    return null;
+  const f = modFamily();
+  const b = (META.modcods || []).find(m => m.index === rung.dominated_by);
+  if (!b) return null;
+  const mod = (b.modulations || {})[f] || b.modulation;
+  return {rung: b, mod: mod, code: b.code_rate, name: mod + ' ' + b.code_rate};
+}
+
+// What is given up by staying, in the two units that matter. A rung can be
+// beaten on either or both: 256QAM 1/2 carries exactly what 64QAM 2/3 does and
+// asks 5.1 dB more for it, while 64QAM 3/4 is beaten on both counts at once.
+function beatenLine(rung, b) {
+  const gain = [];
+  if (b.rung.rate > rung.rate * 1.0001)
+    gain.push((100 * (b.rung.rate / rung.rate - 1)).toFixed(0) + '% more bitrate');
+  const quieter = rung.required_evm_db - b.rung.required_evm_db;
+  if (quieter > 0.05) gain.push(quieter.toFixed(1) + ' dB less signal');
+  return 'Beaten by ' + b.name + ': ' + gain.join(' and ')
+         + ', in the same bandwidth.';
+}
+
+// Marked against the other dropdown's current value, because that is what
+// decides which rung an entry would actually select.
+function markedOptions(items) {
+  return items.map(it => {
+    const b = beats(it.rung);
+    return b ? {value: it.value, text: it.text + ' *',
+                title: beatenLine(it.rung, b)}
+             : {value: it.value, text: it.text};
+  });
+}
+
+function modOptions(code) {
+  return markedOptions(modNames().map(
+      m => ({value: m, text: m, rung: rungFor(m, code)})));
+}
+
+function codeOptions(mod) {
+  return markedOptions([...new Set((META.modcods || []).map(m => m.code_rate))]
+      .map(c => ({value: c, text: c, rung: rungFor(mod, c)})));
+}
+
+// The star is the mark; this is what it means, spelled out under the row for
+// whichever rung is actually selected -- and offering the better one, because
+// naming a setting and making someone find it in two dropdowns is half a job.
+let BETTER = null;
+function paintDominated(mod, code) {
+  const rung = rungFor(mod, code);
+  const b = BETTER = beats(rung);
+  if (!b) {
+    $('pDominatedWhy').innerHTML = '&nbsp;';
+    $('pDominatedFix').style.display = 'none';
+    $('pDominated').className = 'note';
+    return;
+  }
+  $('pDominatedWhy').textContent = beatenLine(rung, b);
+  $('pDominatedFix').textContent = 'Use ' + b.name;
+  $('pDominatedFix').style.display = '';
+  $('pDominated').className = 'note warn';
+}
+
 // Presets filtered to the selected mode, so the list stays short and a mode
 // change cannot leave a profile of the wrong kind selected.
 function fillPresets(want) {
@@ -711,9 +798,8 @@ control({cmd:'profiles'}).then(r => {
     text: v.toFixed(2) + (v === rolls[0] ? ' - narrowest'
                         : v === rolls[rolls.length-1] ? ' - most forgiving' : ''),
   })), 0.25);
-  fill($('modulation'), modNames().map(m => ({value: m, text: m})), '16QAM');
-  const codes = [...new Set(r.modcods.map(m => m.code_rate))];
-  fill($('codeRate'), codes.map(c => ({value: c, text: c})), '3/4');
+  fill($('modulation'), modOptions('3/4'), '16QAM');
+  fill($('codeRate'), codeOptions('16QAM'), '3/4');
   showBitrate(64000);
   paintLocks();
   applyPreset();
@@ -769,6 +855,14 @@ $('sampleRate').onchange = () => {
 $('symbolRate').onchange = () => { deviate(); resolve('symbol_rate'); };
 $('modulation').onchange = () => resolve('modcod');
 $('codeRate').onchange   = () => resolve('modcod');
+// setSelect rather than .value: the option text carries the star, but the
+// value is the bare name, so the rung being switched to is always in the list.
+$('pDominatedFix').onclick = () => {
+  if (!BETTER) return;
+  setSelect($('modulation'), BETTER.mod);
+  setSelect($('codeRate'), BETTER.code);
+  resolve('modcod');
+};
 $('rolloff').onchange    = () => { deviate(); resolve('rolloff'); };
 // No deviate(): the carrier count is part of an OFDM profile rather than a
 // departure from it, so the preset name still describes the link afterwards.

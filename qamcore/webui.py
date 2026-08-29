@@ -69,10 +69,52 @@ def default_profiles() -> dict[str, str]:
     return {m: P.default_for_mode(m) for m in modes}
 
 
+def _rate(m) -> float:
+    """Payload bits carried per transmitted symbol.
+
+    Profile-independent: every profile's capacity is this number times its own
+    payload symbols, so two rungs sit in the same order on all of them. That is
+    what lets dominance be worked out once here rather than per link.
+    """
+    return m.bits_per_symbol * m.conv_rate * m.rs_rate
+
+
+def dominated_by() -> dict[int, int]:
+    """Rungs a different rung beats outright, and which rung beats them.
+
+    A rung is dominated when another carries at least as much and asks no more
+    of the signal -- so choosing it is giving away bitrate, SNR, or both, for
+    nothing. Eleven of the twenty-four are, which is not a mistake: the curated
+    ladder is thirteen rungs and the rest of the 4 x 6 grid was filled in after
+    it, so the grid holds every combination the header can express rather than
+    only the sensible ones. They stay selectable. They are just worth saying
+    out loud, because nothing about "256QAM 1/4" announces that QPSK 1/2 does
+    the same job 10.6 dB more easily.
+
+    The one named is the most robust of the rungs that beat it, so the advice
+    is always "this instead, for less signal" and never a trade.
+    """
+    from . import profiles as P
+
+    out = {}
+    for a in P.MODCODS:
+        better = [b for b in P.MODCODS
+                  if b.index != a.index
+                  and _rate(b) >= _rate(a)
+                  and b.required_evm_db <= a.required_evm_db
+                  and (_rate(b) > _rate(a)
+                       or b.required_evm_db < a.required_evm_db)]
+        if better:
+            out[a.index] = min(
+                better, key=lambda b: (b.required_evm_db, -_rate(b))).index
+    return out
+
+
 def modcod_list() -> list[dict]:
     """Every modulation and code rate the header can express."""
     from . import profiles as P
 
+    beaten = dominated_by()
     return [{
         "index": m.index,
         "modulation": m.modulation,
@@ -84,7 +126,12 @@ def modcod_list() -> list[dict]:
         "bits_per_symbol": m.bits_per_symbol,
         "rs": m.rs_k,
         "required_evm_db": m.required_evm_db,
+        "rate": round(_rate(m), 4),
         "ladder": m.index <= 12,
+        # null when nothing beats it. An index rather than a name, because the
+        # name depends on the constellation family and the page knows which one
+        # is selected.
+        "dominated_by": beaten.get(m.index),
     } for m in P.MODCODS]
 
 

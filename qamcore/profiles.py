@@ -476,19 +476,27 @@ class Profile:
     # ---- selection ------------------------------------------------------
 
     def modcod_for_bitrate(self, bitrate: int, reserve: int = PAD_RESERVE_BPS) -> Modcod:
-        """Lowest rung that carries ``bitrate`` plus the PAD reserve.
+        """The most robust rung that carries ``bitrate`` plus the PAD reserve.
 
-        Lowest rather than highest on purpose: every extra rung costs SNR, so
-        the cheapest MODCOD that fits is always the most robust choice.
+        Robustness is read off ``required_evm_db`` rather than assumed from
+        position. The curated ladder climbs in both throughput and required
+        SNR together, so for indices 0..12 the two orderings agree -- but the
+        rest of the grid was appended after it, and there the cheapest rung
+        that fits is not always the easiest to receive. 16QAM 5/6 carries more
+        than 64QAM 2/3 and asks 4.3 dB less for it; taking the first rung that
+        fit threw that away.
+
+        Ties go to the lower rate: the same robustness for less of the link.
         """
         need = bitrate + reserve
-        for m in MODCODS:
-            if self.net_bitrate(m) >= need:
-                return m
-        raise ValueError(
-            f"profile {self.name} tops out at "
-            f"{self.net_bitrate(MODCODS[-1]) - reserve:.0f} bps; {bitrate} bps requested"
-        )
+        fits = [m for m in MODCODS if self.net_bitrate(m) >= need]
+        if not fits:
+            best = max(MODCODS, key=self.net_bitrate)
+            raise ValueError(
+                f"profile {self.name} tops out at "
+                f"{self.net_bitrate(best) - reserve:.0f} bps; {bitrate} bps requested"
+            )
+        return min(fits, key=lambda m: (m.required_evm_db, self.net_bitrate(m)))
 
     def modcod_for_evm(self, evm_db: float, margin_db: float = 2.0) -> Modcod | None:
         """Highest rung the measured EVM supports. The auto-probe decision.
@@ -498,11 +506,14 @@ class Profile:
         on the ladder. ``margin_db`` is fade headroom; a link sitting exactly on
         its threshold is a link that breaks up.
         """
-        best = None
-        for m in MODCODS:
-            if m.required_evm_db + margin_db <= evm_db:
-                best = m
-        return best
+        usable = [m for m in MODCODS if m.required_evm_db + margin_db <= evm_db]
+        if not usable:
+            return None
+        # The fastest of them, not the last of them. Index order is wire order,
+        # and the grid appended after the ladder does not climb in it: walking
+        # to the end landed on 256QAM 1/4 at 24 dB, a quarter of the link that
+        # 64QAM 5/6 would have carried at the same EVM.
+        return max(usable, key=lambda m: (self.net_bitrate(m), -m.required_evm_db))
 
     def validate(self) -> None:
         """Fail loudly at import if a profile is geometrically impossible."""

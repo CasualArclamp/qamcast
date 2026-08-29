@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.8.5 — the rate picker reads the ladder instead of counting it
+
+**Fixed**
+
+- **Both MODCOD choices walked the rungs in index order and assumed that was
+  robustness order.** It stopped being true when the rest of the 4x6 grid was
+  appended below the curated ladder — index is wire format, so the extra rungs
+  could only go on the end, and there they climb in neither throughput nor
+  required SNR. The two selectors now read `required_evm_db` and the capacity
+  table rather than inferring them from position.
+- **The receiver's auto-probe suggested the *last* rung a link could hold, not
+  the fastest.** On a 44.1 kHz FM link measuring 24 dB EVM it asked for
+  256QAM 1/4 at 24.3 kbps, when 64QAM 5/6 would have carried 65.5 kbps at the
+  same EVM — 63% of the link given away. A pristine link capped at 69.9 kbps
+  instead of 87.4.
+- **The transmitter picked the first rung that fit, not the easiest to
+  receive.** Asking for 40 kbps on that link chose 64QAM 2/3, needing 17.8 dB,
+  when 16QAM 5/6 carries the same audio and asks 13.5 — **4.3 dB of margin,
+  for nothing**. 16 and 48 kbps gave away 0.3 and 1.1 dB the same way.
+
+Nothing about the wire format changes: the rung index still travels in the
+frame header and still means what it always meant. A v1.8.4 receiver decodes a
+v1.8.5 transmitter and the other way round. The self test now runs 64QAM 5/6
+where it used to run 64QAM 3/4 — faster and 1.1 dB more robust at once.
+
 ## v1.8.4 — device selection on macOS and Linux
 
 **Added** — thanks to [@wertyilk](https://github.com/wertyilk) ([#1](https://github.com/CasualArclamp/qamcast/pull/1))

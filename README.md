@@ -3,6 +3,8 @@
 
 # QAMcast
 
+If you've found this worth your time, please consider [donating via PayPal](https://www.paypal.me/Arclamp).
+
 A single-carrier QAM broadcast modem for the audio band. It takes a live
 stream — an internet radio station, or any file ffmpeg can open — and puts it
 out as digital audio, HD Radio style: a fixed occupied bandwidth, adaptive
